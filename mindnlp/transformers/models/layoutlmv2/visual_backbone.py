@@ -374,7 +374,7 @@ class ResNet(nn.Cell):
     def __init__(self, stem, stages, num_classes=None, out_features=None):
         """
         Args:
-            stem (nn.Module): a stem module
+            stem (nn.Cell): a stem module
             stages (list[list[CNNBlockBase]]): several (typically 4) stages,
                 each contains multiple :class:`CNNBlockBase`.
             num_classes (None or int): if None, will not perform classification.

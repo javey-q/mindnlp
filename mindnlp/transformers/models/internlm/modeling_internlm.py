@@ -641,7 +641,7 @@ checkpointing.
         
         Args:
             self (InternLMPreTrainedModel): The instance of the InternLMPreTrainedModel class.
-            cell (nn.Module): The cell for which the weights need to be initialized.
+            cell (nn.Cell): The cell for which the weights need to be initialized.
         
         Returns:
             None. This method modifies the weights of the given cell in-place.

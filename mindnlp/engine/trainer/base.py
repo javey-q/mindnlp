@@ -2233,7 +2233,7 @@ indicating whether to prefer safe tensors.
 def load_sharded_checkpoint(model, folder, strict=True, prefer_safe=True):
     """
     This is the same as
-    [`torch.nn.Module.load_state_dict`](https://pytorch.org/docs/stable/generated/torch.nn.Module.html?highlight=load_state_dict#torch.nn.Module.load_state_dict)
+    [`torch.nn.Cell.load_state_dict`](https://pytorch.org/docs/stable/generated/torch.nn.Cell.html?highlight=load_state_dict#torch.nn.Cell.load_state_dict)
     but for a sharded checkpoint.
 
     This load is performed efficiently: each checkpoint shard is loaded one by one in RAM and deleted after being

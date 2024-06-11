@@ -1191,7 +1191,7 @@ class XLMRobertaForCausalLM(XLMRobertaPreTrainedModel):
         
         Args:
             self (XLMRobertaForCausalLM): The instance of the XLMRobertaForCausalLM class.
-            new_embeddings (torch.nn.Module): The new embeddings to be set as the output embeddings for the model.
+            new_embeddings (torch.nn.Cell): The new embeddings to be set as the output embeddings for the model.
         
         Returns:
             None. This method does not return any value.
@@ -1418,14 +1418,14 @@ class XLMRobertaForMaskedLM(XLMRobertaPreTrainedModel):
         
         Args:
             self (XLMRobertaForMaskedLM): The instance of the XLMRobertaForMaskedLM class.
-            new_embeddings (torch.nn.Module): The new embeddings to be set as the output embeddings for the model. 
-                It should be an instance of torch.nn.Module representing the new embeddings.
+            new_embeddings (torch.nn.Cell): The new embeddings to be set as the output embeddings for the model. 
+                It should be an instance of torch.nn.Cell representing the new embeddings.
         
         Returns:
             None: This method does not return any value.
         
         Raises:
-            - TypeError: If the new_embeddings parameter is not an instance of torch.nn.Module.
+            - TypeError: If the new_embeddings parameter is not an instance of torch.nn.Cell.
             - AttributeError: If the lm_head.decoder attribute does not exist or is not accessible within the XLMRobertaForMaskedLM instance.
         """
         self.lm_head.decoder = new_embeddings

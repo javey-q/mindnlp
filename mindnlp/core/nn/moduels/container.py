@@ -66,10 +66,10 @@ class ModuleList(Module):
 
     Example::
 
-        class MyModule(nn.Module):
+        class MyModule(nn.Cell):
             def __init__(self):
                 super(MyModule, self).__init__()
-                self.linears = nn.ModuleList([nn.Linear(10, 10) for i in range(10)])
+                self.linears = nn.CellList([nn.Linear(10, 10) for i in range(10)])
 
             def forward(self, x):
                 # ModuleList can act as an iterable, or be indexed using ints
@@ -106,7 +106,7 @@ class ModuleList(Module):
         r"""Appends a given module at the end of the list.
 
         Arguments:
-            module (nn.Module): module to append
+            module (nn.Cell): module to append
         """
         self.add_module(str(len(self)), module)
         return self
@@ -137,7 +137,7 @@ class ParameterList(Module):
 
     Example::
 
-        class MyModule(nn.Module):
+        class MyModule(nn.Cell):
             def __init__(self):
                 super(MyModule, self).__init__()
                 self.params = nn.ParameterList([nn.Parameter(torch.randn(10, 10)) for i in range(10)])

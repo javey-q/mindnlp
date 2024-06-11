@@ -766,7 +766,7 @@ step.
         
         Args:
             self (GPTPanguForCausalLM): The instance of the GPTPanguForCausalLM class.
-            new_embeddings (torch.nn.Module): The new embeddings to set as the output embeddings. 
+            new_embeddings (torch.nn.Cell): The new embeddings to set as the output embeddings. 
         
         Returns:
             None. This method does not return any value.

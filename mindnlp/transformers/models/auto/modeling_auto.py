@@ -1484,9 +1484,9 @@ class AutoModelForVision2Seq(_BaseAutoModelClass):
         - encoder (Encoder): The encoder module for the model.
         - decoder (Decoder): The decoder module for the model.
         - tokenizer (Tokenizer): The tokenizer used for tokenization tasks.
-        - vision_embedding (nn.Module): The module responsible for embedding the visual features.
-        - sequence_embedding (nn.Module): The module responsible for embedding the sequence input.
-        - classifier (nn.Module): The classifier module for the model.
+        - vision_embedding (nn.Cell): The module responsible for embedding the visual features.
+        - sequence_embedding (nn.Cell): The module responsible for embedding the sequence input.
+        - classifier (nn.Cell): The classifier module for the model.
 
     Methods:
         - forward: Performs a forward pass through the model, taking visual features and sequence input as input.

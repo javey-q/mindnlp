@@ -795,7 +795,7 @@ class VanForImageClassification(VanPreTrainedModel):
     
     Attributes:
         van (VanModel): The VanModel instance used for feature extraction.
-        classifier (nn.Module): The classifier module for predicting the final output based on the extracted features.
+        classifier (nn.Cell): The classifier module for predicting the final output based on the extracted features.
     
     Methods:
         __init__(self, config):

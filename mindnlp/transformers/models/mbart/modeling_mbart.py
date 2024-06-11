@@ -578,7 +578,7 @@ class MBartPreTrainedModel(PreTrainedModel):
         
         Args:
             self (MBartPreTrainedModel): The instance of MBartPreTrainedModel.
-            cell (nn.Module): The cell whose weights are to be initialized.
+            cell (nn.Cell): The cell whose weights are to be initialized.
         
         Returns:
             None. This method operates in-place and does not return any value.

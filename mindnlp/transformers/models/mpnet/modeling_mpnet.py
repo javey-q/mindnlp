@@ -932,7 +932,7 @@ class MPNetForMaskedLM(MPNetPreTrainedModel):
         
         Args:
             self (MPNetForMaskedLM): The instance of the MPNetForMaskedLM class.
-            new_embeddings (torch.nn.Module): The new embeddings to be set as the output embeddings for the model.
+            new_embeddings (torch.nn.Cell): The new embeddings to be set as the output embeddings for the model.
         
         Returns:
             None. This method does not return any value.

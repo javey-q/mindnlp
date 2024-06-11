@@ -423,7 +423,7 @@ class Transformer(nn.Cell):
             vocab_size (int): Vocabulary size.
             n_layers (int): Number of layers in the model.
             tok_embeddings (ParallelEmbedding): Token embeddings.
-            layers (torch.nn.ModuleList): List of Transformer blocks.
+            layers (torch.nn.CellList): List of Transformer blocks.
             norm (RMSNorm): Layer normalization for the model output.
             output (ColumnParallelLinear): Linear layer for final output.
             freqs_cis (mindspore.Tensor): Precomputed cosine and sine frequencies.

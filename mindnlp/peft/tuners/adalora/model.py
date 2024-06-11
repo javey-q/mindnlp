@@ -223,7 +223,7 @@ class AdaLoraModel(LoraModel):
         Args:
             lora_config (LoraConfig): The configuration for the LoRa model.
             adapter_name (str): The name of the adapter.
-            target (Union[BaseTunerLayer, nn.Module]): The target layer for which the new cell is being created.
+            target (Union[BaseTunerLayer, nn.Cell]): The target layer for which the new cell is being created.
         
         Returns:
             None. This method returns None.
@@ -359,7 +359,7 @@ TRANSFORMERS_MODELS_TO_ADALORA_TARGET_MODULES_MAPPING.
     def __getattr__(self, name: str):
         """Forward missing attributes to the wrapped cell."""
         try:
-            return super().__getattr__(name)  # defer to nn.Module's logic
+            return super().__getattr__(name)  # defer to nn.Cell's logic
         except AttributeError:
             return getattr(self.model, name)
 

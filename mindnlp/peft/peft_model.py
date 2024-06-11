@@ -363,7 +363,7 @@ class PeftModel(nn.Cell):
     def __getattr__(self, name: str):
         """Forward missing attributes to the wrapped cell."""
         try:
-            return super().__getattr__(name)  # defer to nn.Module's logic
+            return super().__getattr__(name)  # defer to nn.Cell's logic
         except AttributeError:
             return getattr(self.base_model, name)
 

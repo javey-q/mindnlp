@@ -1620,13 +1620,13 @@ the tokens with labels in `[0, ..., config.vocab_size]`.
         
         Args:
             self (EsmForMaskedLM): The instance of the EsmForMaskedLM class.
-            new_embeddings (torch.nn.Module): The new embeddings to be set as output embeddings for the model.
+            new_embeddings (torch.nn.Cell): The new embeddings to be set as output embeddings for the model.
         
         Returns:
             None. This method does not return any value.
         
         Raises:
-            - TypeError: If the provided new_embeddings is not of type torch.nn.Module.
+            - TypeError: If the provided new_embeddings is not of type torch.nn.Cell.
             - AttributeError: If the lm_head.decoder attribute is not present in the EsmForMaskedLM instance.
         """
         self.lm_head.decoder = new_embeddings

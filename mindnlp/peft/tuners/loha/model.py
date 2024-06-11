@@ -30,12 +30,12 @@ class LoHaModel(LycorisTuner):
     https://github.com/KohakuBlueleaf/LyCORIS/blob/eb460098187f752a5d66406d3affade6f0a07ece/lycoris/modules/loha.py
 
     Args:
-        model (`torch.nn.Module`): The model to which the adapter tuner layers will be attached.
+        model (`torch.nn.Cell`): The model to which the adapter tuner layers will be attached.
         config ([`LoHaConfig`]): The configuration of the LoHa model.
         adapter_name (`str`): The name of the adapter, defaults to `"default"`.
 
     Returns:
-        `torch.nn.Module`: The LoHa model.
+        `torch.nn.Cell`: The LoHa model.
 
     Example:
         ```py
@@ -75,7 +75,7 @@ class LoHaModel(LycorisTuner):
         ```
 
     **Attributes**:
-        - **model** ([`~torch.nn.Module`]) -- The model to be adapted.
+        - **model** ([`~torch.nn.Cell`]) -- The model to be adapted.
         - **peft_config** ([`LoHaConfig`]): The configuration of the LoHa model.
     """
     prefix: str = "hada_"

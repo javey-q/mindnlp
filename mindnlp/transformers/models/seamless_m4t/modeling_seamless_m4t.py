@@ -4213,7 +4213,7 @@ class SeamlessM4TForTextToText(SeamlessM4TPreTrainedModel):
         
         Args:
             self (SeamlessM4TForTextToText): An instance of the SeamlessM4TForTextToText model.
-            new_embeddings (torch.nn.Module): The new output embeddings to be set for the model.
+            new_embeddings (torch.nn.Cell): The new output embeddings to be set for the model.
         
         Returns:
             None. This method does not return any value.
@@ -4221,7 +4221,7 @@ class SeamlessM4TForTextToText(SeamlessM4TPreTrainedModel):
         Raises:
             None. This method does not raise any exceptions.
         
-        This method sets the output embeddings of the model to the given new_embeddings. The new_embeddings should be an instance of the torch.nn.Module class. This method does not return any value.
+        This method sets the output embeddings of the model to the given new_embeddings. The new_embeddings should be an instance of the torch.nn.Cell class. This method does not return any value.
         """
         self.lm_head = new_embeddings
 

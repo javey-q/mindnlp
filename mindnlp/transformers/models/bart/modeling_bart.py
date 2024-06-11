@@ -2302,8 +2302,8 @@ dictionary containing the prepared inputs.
         
         Args:
             self: An instance of the `BartForCausalLM` class.
-            new_embeddings (torch.nn.Module): The new embeddings to be set as the output embeddings.
-                This should be an instance of `torch.nn.Module` subclass, which represents the new embeddings
+            new_embeddings (torch.nn.Cell): The new embeddings to be set as the output embeddings.
+                This should be an instance of `torch.nn.Cell` subclass, which represents the new embeddings
                 to be used as output in the `BartForCausalLM` model. It is expected to have the same size as the
                 existing embeddings.
         
@@ -2326,7 +2326,7 @@ dictionary containing the prepared inputs.
         
         Args:
             self (BartForCausalLM): The instance of the BartForCausalLM class.
-            decoder (nn.Module): The decoder module to be set for the model.
+            decoder (nn.Cell): The decoder module to be set for the model.
         
         Returns:
             None. This method does not return any value.
@@ -2339,7 +2339,7 @@ dictionary containing the prepared inputs.
         
         The `self` parameter refers to the instance of the BartForCausalLM class on which the method is called.
         
-        The `decoder` parameter is of type `nn.Module` and represents the decoder module to be set for the model. The decoder module should be compatible with the BartForCausalLM model architecture.
+        The `decoder` parameter is of type `nn.Cell` and represents the decoder module to be set for the model. The decoder module should be compatible with the BartForCausalLM model architecture.
         
         Note that setting the decoder module will overwrite any previously set decoder module for the model.
         

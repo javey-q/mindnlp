@@ -2372,7 +2372,7 @@ the tokenizer and model, as well as performing masked language modeling tasks wi
         
         Args:
             self (LongformerForMaskedLM): The instance of the LongformerForMaskedLM class.
-            new_embeddings (torch.nn.Module): The new embeddings to be set as the output embeddings for the model. It should be an instance of torch.nn.Module.
+            new_embeddings (torch.nn.Cell): The new embeddings to be set as the output embeddings for the model. It should be an instance of torch.nn.Cell.
         
         Returns:
             None: This method returns None.

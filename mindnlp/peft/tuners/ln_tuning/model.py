@@ -48,7 +48,7 @@ class LNTuningModel(BaseTuner):
         adapter_name (`str`): The name of the adapter, defaults to `"default"`.
 
     Returns:
-        'mindspore.nn.Module': The adapted model with LayerNorm tuned on.
+        'mindspore.nn.Cell': The adapted model with LayerNorm tuned on.
 
     Example:
 

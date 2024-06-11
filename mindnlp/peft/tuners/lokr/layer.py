@@ -75,7 +75,7 @@ the base layer's output. The class provides methods for creating, updating, merg
         - construct: Method to construct the output of the layer with adaptive modifications applied.
     
     Note:
-        This class is intended for advanced neural network adaptation techniques and should be used in conjunction with PyTorch's nn.Module functionalities.
+        This class is intended for advanced neural network adaptation techniques and should be used in conjunction with PyTorch's nn.Cell functionalities.
     """
     other_param_names = ("r", "alpha", "scaling", "rank_dropout", "cell_dropout")
     # All names of layers that may contain adapter weights

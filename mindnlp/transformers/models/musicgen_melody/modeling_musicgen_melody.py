@@ -1723,7 +1723,7 @@ or default values.
         
         Args:
             self (MusicgenMelodyForConditionalGeneration): The instance of the MusicgenMelodyForConditionalGeneration class.
-            cell (nn.Module): The cell for which the weights are to be initialized.
+            cell (nn.Cell): The cell for which the weights are to be initialized.
         
         Returns:
             None

@@ -1411,7 +1411,7 @@ output_hidden_states, return_dict)
         
         Args:
             self (RobertaForCausalLM): The instance of the RobertaForCausalLM class.
-            new_embeddings (torch.nn.Module): The new embeddings to be set as the output embeddings.
+            new_embeddings (torch.nn.Cell): The new embeddings to be set as the output embeddings.
         
         Returns:
             None: This method does not return any value.
@@ -1678,7 +1678,7 @@ output attentions, output hidden states, and return dictionary. It also includes
         
         Args:
             self (RobertaForMaskedLM): The instance of the RobertaForMaskedLM class.
-            new_embeddings (torch.nn.Module): The new output embeddings to be set for the model. It should be an instance of torch.nn.Module.
+            new_embeddings (torch.nn.Cell): The new output embeddings to be set for the model. It should be an instance of torch.nn.Cell.
         
         Returns:
             None. This method does not return any value.

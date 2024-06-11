@@ -318,7 +318,7 @@ class TransformerEncoderLayer(nn.Cell):
             nhead (int): The number of heads in the multiheadattention models.
             dim_feedforward (int, optional): The dimension of the feedforward network model. Default is 2048.
             dropout (float, optional): The dropout value. Default is 0.1.
-            activation (str or torch.nn.Module): The activation function. Can be a string ('relu') or a torch.nn.Module instance (e.g., nn.ReLU). Default is 'relu'.
+            activation (str or torch.nn.Cell): The activation function. Can be a string ('relu') or a torch.nn.Cell instance (e.g., nn.ReLU). Default is 'relu'.
             layer_norm_eps (float, optional): The epsilon value for layer normalization. Default is 1e-05.
             batch_first (bool, optional): If True, then the input and output tensors are provided as (batch, seq, feature). Default is False.
             norm_first (bool, optional): If True, layer normalization is applied first, otherwise last. Default is False.
@@ -328,7 +328,7 @@ class TransformerEncoderLayer(nn.Cell):
         
         Raises:
             ValueError: If the activation function is neither 'relu' nor 'gelu' or an instance of nn.ReLU or nn.GELU.
-            TypeError: If the provided activation function is not of type str or torch.nn.Module.
+            TypeError: If the provided activation function is not of type str or torch.nn.Cell.
         """
         super().__init__()
         self.self_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=batch_first)
@@ -684,9 +684,9 @@ class TransformerEncoder(nn.Cell):
         
         Args:
             self (TransformerEncoder): The instance of the TransformerEncoder class.
-            encoder_layer (torch.nn.Module): The encoder layer module to be cloned.
+            encoder_layer (torch.nn.Cell): The encoder layer module to be cloned.
             num_layers (int): The number of encoder layers to be created.
-            norm (torch.nn.Module, optional): The normalization layer to be applied after each encoder layer. 
+            norm (torch.nn.Cell, optional): The normalization layer to be applied after each encoder layer. 
                 Defaults to None.
         
         Returns:
@@ -773,9 +773,9 @@ class TransformerDecoder(nn.Cell):
         
         Args:
             self (TransformerDecoder): The instance of the class.
-            decoder_layer (nn.Module): The decoder layer to be cloned.
+            decoder_layer (nn.Cell): The decoder layer to be cloned.
             num_layers (int): The number of decoder layers to be created.
-            norm (nn.Module, optional): The normalization layer to be applied after each decoder layer. Default is None.
+            norm (nn.Cell, optional): The normalization layer to be applied after each decoder layer. Default is None.
         
         Returns:
             None

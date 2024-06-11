@@ -874,13 +874,13 @@ and feature extraction output length computations.
         
         Args:
             self (WhisperPreTrainedModel): The instance of the WhisperPreTrainedModel class.
-            cell (nn.Module): The neural network cell for which weights are to be initialized. It can be an instance of nn.Dense, nn.Conv1d, nn.Embedding, or WhisperEncoder.
+            cell (nn.Cell): The neural network cell for which weights are to be initialized. It can be an instance of nn.Dense, nn.Conv1d, nn.Embedding, or WhisperEncoder.
             
         Returns:
             None. This method does not return any value.
         
         Raises:
-            - TypeError: If the cell parameter is not an instance of nn.Module.
+            - TypeError: If the cell parameter is not an instance of nn.Cell.
             - ValueError: If the cell parameter is not one of the supported types (nn.Dense, nn.Conv1d, nn.Embedding, or WhisperEncoder).
             - ValueError: If the cell type is nn.Embedding and the padding index is not provided.
             - ValueError: If the cell type is WhisperEncoder and the embed_positions weight shape is not compatible with the sinusoids function output.

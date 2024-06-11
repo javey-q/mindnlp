@@ -174,7 +174,7 @@ class AdaptionPromptModel(nn.Cell):
     def __getattr__(self, name: str):
         """Forward missing attributes to the wrapped cell."""
         try:
-            return super().__getattr__(name)  # defer to nn.Module's logic
+            return super().__getattr__(name)  # defer to nn.Cell's logic
         except AttributeError:
             # This is necessary as e.g. causal models have various methods that we
             # don't want to re-implement here.

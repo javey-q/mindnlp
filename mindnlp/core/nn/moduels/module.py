@@ -15,7 +15,7 @@ class Module:
         import minispore.nn as nn
         import minispore.nn.functional as F
 
-        class Model(nn.Module):
+        class Model(nn.Cell):
             def __init__(self):
                 super(Model, self).__init__()
                 self.conv1 = nn.Conv2d(1, 20, 5)
@@ -247,7 +247,7 @@ class Module:
             elif modules is not None and name in modules:
                 if value is not None:
                     raise TypeError("cannot assign '{}' as child module '{}' "
-                                    "(torch.nn.Module or None expected)"
+                                    "(torch.nn.Cell or None expected)"
                                     .format(type(value), name))
                 modules[name] = value
             else:

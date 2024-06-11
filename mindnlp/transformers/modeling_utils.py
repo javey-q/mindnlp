@@ -515,7 +515,7 @@ class PreTrainedModel(nn.Cell, CellUtilMixin, GenerationMixin, PeftAdapterMixin)
         ):
             assert isinstance(decoder_pointer, nn.Cell) and isinstance(
                 encoder_pointer, nn.Cell
-            ), f"{decoder_pointer} and {encoder_pointer} have to be of type nn.Module"
+            ), f"{decoder_pointer} and {encoder_pointer} have to be of type nn.Cell"
             if hasattr(decoder_pointer, "weight"):
                 assert hasattr(encoder_pointer, "weight")
                 encoder_pointer.weight = decoder_pointer.weight
@@ -800,8 +800,8 @@ class PreTrainedModel(nn.Cell, CellUtilMixin, GenerationMixin, PeftAdapterMixin)
         
         Args:
             self (PreTrainedModel): The instance of the PreTrainedModel class.
-            new_lm_head (torch.nn.Module): The resized language model head to be copied into.
-            old_lm_head (torch.nn.Module): The original language model head to be copied from.
+            new_lm_head (torch.nn.Cell): The resized language model head to be copied into.
+            old_lm_head (torch.nn.Cell): The original language model head to be copied from.
             num_tokens_to_copy (int): The number of tokens to copy from the original language model head.
             transposed (bool): Whether the weight tensor of the new language model head is transposed.
             has_new_lm_head_bias (bool): Whether the new language model head has a bias tensor.

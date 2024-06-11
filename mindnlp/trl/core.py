@@ -283,7 +283,7 @@ class LengthSampler:
 #######################################################
 
 # def respond_to_batch(
-#     model: nn.Module, queries: List[torch.LongTensor],
+#     model: nn.Cell, queries: List[torch.LongTensor],
 # txt_len: int = 20, top_k: int = 0, top_p: float = 1.0
 # ) -> torch.LongTensor:
 #     """Sample text from language model."""

@@ -1523,7 +1523,7 @@ class CpmAntForCausalLM(CpmAntPreTrainedModel):
         
         Args:
             self (CpmAntForCausalLM): The instance of the CpmAntForCausalLM class.
-            new_embeddings (torch.nn.Module): The new embeddings to be set as the output embeddings of the model. 
+            new_embeddings (torch.nn.Cell): The new embeddings to be set as the output embeddings of the model. 
         
         Returns:
             None
@@ -1531,7 +1531,7 @@ class CpmAntForCausalLM(CpmAntPreTrainedModel):
         Raises:
             None
         
-        This method sets the output embeddings of the CpmAntForCausalLM model to the provided new embeddings. The new embeddings should be an instance of torch.nn.Module.
+        This method sets the output embeddings of the CpmAntForCausalLM model to the provided new embeddings. The new embeddings should be an instance of torch.nn.Cell.
         
         Example:
             

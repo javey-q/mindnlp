@@ -761,7 +761,7 @@ def clone_cell(cell: nn.Cell, share_weights=False):
 
     return clone
 
-def replicate_layers(model: nn.Module, layer_map: list[tuple[int, int]]):
+def replicate_layers(model: nn.Cell, layer_map: list[tuple[int, int]]):
     """Replicate layers in a transfomer model with weight sharing.
 
     This function looks for a cell list attribute at model[(.model)*].layers and replicates the layers in the cell
@@ -775,7 +775,7 @@ def replicate_layers(model: nn.Module, layer_map: list[tuple[int, int]]):
         model = model.bert
 
     model_type = None
-    layers: nn.ModuleList = None
+    layers: nn.CellList = None
     if hasattr(model, "layers"):
         model_type = "llama"
         layers = model.layers

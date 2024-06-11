@@ -775,7 +775,7 @@ weight value at that index is set to 0. The weight data is then set for the cell
         
         Args:
             self (PhiPreTrainedModel): The instance of the PhiPreTrainedModel class.
-            cell (nn.Module): The neural network cell for which the weights and biases are initialized.
+            cell (nn.Cell): The neural network cell for which the weights and biases are initialized.
         
         Returns:
             None. This method does not return any value.

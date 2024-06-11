@@ -256,7 +256,7 @@ original module for reference. The class includes methods for enabling and disab
 def custom_get_subcell(model: nn.Cell, target: str) -> nn.Cell:
     """
     Returns the subcell given by ``target`` if it exists, otherwise throws an error.
-    功能和 torch.nn.Module 相似
+    功能和 torch.nn.Cell 相似
     """
     if target == "":
         return model
@@ -271,7 +271,7 @@ def custom_get_subcell(model: nn.Cell, target: str) -> nn.Cell:
         mod = getattr(mod, item)
 
         if not isinstance(mod, nn.Cell):
-            raise AttributeError("`" + item + "` is not an nn.Module")
+            raise AttributeError("`" + item + "` is not an nn.Cell")
 
     return mod
 

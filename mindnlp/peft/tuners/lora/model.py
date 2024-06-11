@@ -192,7 +192,7 @@ class LoraModel(BaseTuner):
         """
         return check_target_cell_exists(lora_config, key)
 
-    def _prepare_model(self, peft_config: LoraConfig, model: nn.Module):
+    def _prepare_model(self, peft_config: LoraConfig, model: nn.Cell):
         r"""
         A private method to modify the model structure before adapter is applied.
 
@@ -223,7 +223,7 @@ class LoraModel(BaseTuner):
             adapter_name (str): The name of the adapter.
             target (LoraLayer): The target LoraLayer or AdaLoraLayer object to update or replace.
             target_name (str): The name of the target layer.
-            parent (nn.Module): The parent module to which the target layer belongs.
+            parent (nn.Cell): The parent module to which the target layer belongs.
             current_key: The current key used for matching patterns.
         
         Returns:
@@ -332,13 +332,13 @@ class LoraModel(BaseTuner):
             else:
                 new_cell.state = child.state
 
-    def _mark_only_adapters_as_trainable(self, model: nn.Module) -> None:
+    def _mark_only_adapters_as_trainable(self, model: nn.Cell) -> None:
         r"""
         Marks only specific adapters in the model as trainable based on the specified bias configuration.
         
         Args:
             self (LoraModel): The instance of the LoraModel class.
-            model (nn.Module): The neural network model on which to apply the trainable markings.
+            model (nn.Cell): The neural network model on which to apply the trainable markings.
         
         Returns:
             None. This method does not return any value.
@@ -374,7 +374,7 @@ class LoraModel(BaseTuner):
         Args:
             lora_config (dict): The configuration parameters for the Lora model.
             adapter_name (str): The name of the adapter to be used.
-            target (torch.nn.Module): The target cell for which a new cell needs to be created.
+            target (torch.nn.Cell): The target cell for which a new cell needs to be created.
         
         Returns:
             None. Returns the newly created cell based on the specified target.
@@ -404,7 +404,7 @@ class LoraModel(BaseTuner):
     def __getattr__(self, name: str):
         """Forward missing attributes to the wrapped cell."""
         try:
-            return super().__getattr__(name)  # defer to nn.Module's logic
+            return super().__getattr__(name)  # defer to nn.Cell's logic
         except AttributeError:
             return getattr(self.model, name)
 

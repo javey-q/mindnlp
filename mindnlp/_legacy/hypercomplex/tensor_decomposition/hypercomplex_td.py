@@ -140,7 +140,7 @@ def calculate_parameters(model):
     Calculate the total number of trainable parameters in the given model.
     
     Args:
-        model (torch.nn.Module): The input model for which the parameters need to be calculated.
+        model (torch.nn.Cell): The input model for which the parameters need to be calculated.
     
     Returns:
         None: This function does not return any value explicitly but prints the total number of parameters.
