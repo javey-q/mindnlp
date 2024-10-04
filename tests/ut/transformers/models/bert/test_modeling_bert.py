@@ -22,7 +22,8 @@ from mindnlp.utils.testing_utils import (
     CaptureLogger,
     require_mindspore,
     slow,
-    is_mindspore_available
+    is_mindspore_available,
+    parse_flag_from_env
 )
 
 from ...generation.test_utils import GenerationTesterMixin
@@ -30,6 +31,8 @@ from ...test_configuration_common import ConfigTester
 from ...test_modeling_common import ModelTesterMixin, floats_tensor, ids_tensor, random_attention_mask
 # from ...test_pipeline_mixin import PipelineTesterMixin
 
+from mindspore._c_expression import _framework_profiler_step_start
+from mindspore._c_expression import _framework_profiler_step_end
 
 if is_mindspore_available():
     import mindspore
@@ -681,14 +684,25 @@ class BertModelIntegrationTest(unittest.TestCase):
     @slow
     def test_inference_time(self):
         import time
+        _run_profiler = parse_flag_from_env('MS_ENABLE_RUNTIME_PROFILER', False)
         model = BertModel.from_pretrained("google-bert/bert-base-uncased")
         input_ids = mindspore.tensor([[0, 345, 232, 328, 740, 140, 1695, 69, 6078, 1588, 2]])
         attention_mask = mindspore.tensor([[0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]])
         infer_time = []
+        if _run_profiler:
+             _framework_profiler_step_start()
         with no_grad():
             for i in range(20):
                 s = time.time()
                 output = model(input_ids, attention_mask=attention_mask)[0]
                 t = time.time()
                 infer_time.append(t - s)
+        if _run_profiler:
+            _framework_profiler_step_end()
         print(infer_time)
+        average_time_ms = sum(infer_time)/len(infer_time)*1000
+        print(f'average inference time: {average_time_ms} ms')
+
+if __name__ == '__main__':
+    My_test = BertModelIntegrationTest()
+    My_test.test_inference_time()
