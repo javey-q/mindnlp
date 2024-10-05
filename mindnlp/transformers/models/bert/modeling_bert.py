@@ -23,6 +23,7 @@ from typing import List, Optional, Tuple, Union
 import mindspore
 from mindnlp.core import nn, ops
 from mindnlp.core.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
+from mindspore import jit
 
 from ...activations import ACT2FN
 from ...modeling_outputs import (
@@ -167,6 +168,24 @@ class BertSelfAttention(nn.Module):
         x = x.view(new_x_shape)
         return x.permute(0, 2, 1, 3)
 
+    def fuse_projections(self, fuse=True):
+        dtype = self.query.weight.data.dtype
+        use_bias = True
+        if not self.is_decoder:
+            # fetch weight matrices.
+            concatenated_weights = ops.cat([self.query.weight.data, self.key.weight.data, self.value.weight.data])
+            print(concatenated_weights.dtype)
+            print(concatenated_weights.shape)
+            in_features = concatenated_weights.shape[1]
+            out_features = concatenated_weights.shape[0]
+
+            # create a new single projection layer and copy over the weights.
+            self.qkv = nn.Linear(in_features, out_features, bias=use_bias, dtype=dtype)
+            self.qkv.weight.set_data(concatenated_weights)
+            if use_bias:
+                concatenated_bias = ops.cat([self.query.bias.data, self.key.bias.data, self.value.bias.data])
+                self.qkv.bias.set_data(concatenated_bias)
+
     def forward(
         self,
         hidden_states: mindspore.Tensor,
@@ -177,6 +196,7 @@ class BertSelfAttention(nn.Module):
         past_key_value: Optional[Tuple[Tuple[mindspore.Tensor]]] = None,
         output_attentions: Optional[bool] = False,
     ) -> Tuple[mindspore.Tensor]:
+        
         mixed_query_layer = self.query(hidden_states)
 
         # If this is instantiated as a cross-attention module, the keys
@@ -259,6 +279,7 @@ class BertSelfAttention(nn.Module):
         context_layer = ops.matmul(attention_probs, value_layer)
 
         context_layer = context_layer.permute(0, 2, 1, 3)
+        # ?
         new_context_layer_shape = context_layer.shape[:-2] + (self.all_head_size,)
         context_layer = context_layer.view(new_context_layer_shape)
 
@@ -294,6 +315,7 @@ class BertAttention(nn.Module):
         self.self = BERT_SELF_ATTENTION_CLASSES[config._attn_implementation](
             config, position_embedding_type=position_embedding_type
         )
+        self.self.fuse_projections()
         self.output = BertSelfOutput(config)
         self.pruned_heads = set()
 
