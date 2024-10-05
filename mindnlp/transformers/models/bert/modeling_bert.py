@@ -122,6 +122,7 @@ class BertEmbeddings(nn.Module):
                 token_type_ids = ops.zeros(input_shape, dtype=mindspore.int64)
 
         if inputs_embeds is None:
+            # (b, l, d)
             inputs_embeds = self.word_embeddings(input_ids)
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
 
@@ -401,6 +402,7 @@ class BertLayer(nn.Module):
             output_attentions=output_attentions,
             past_key_value=self_attn_past_key_value,
         )
+        # Tensor (b, l, d)
         attention_output = self_attention_outputs[0]
 
         # if decoder, the last output is tuple of self-attn cache
@@ -408,6 +410,7 @@ class BertLayer(nn.Module):
             outputs = self_attention_outputs[1:-1]
             present_key_value = self_attention_outputs[-1]
         else:
+            # outputs: ()
             outputs = self_attention_outputs[1:]  # add self attentions if we output attention weights
 
         cross_attn_present_key_value = None
@@ -436,6 +439,7 @@ class BertLayer(nn.Module):
             cross_attn_present_key_value = cross_attention_outputs[-1]
             present_key_value = present_key_value + cross_attn_present_key_value
 
+        # feed_forward
         layer_output = apply_chunking_to_forward(
             self.feed_forward_chunk, self.chunk_size_feed_forward, self.seq_len_dim, attention_output
         )
@@ -774,6 +778,7 @@ class BertModel(BertPreTrainedModel):
             If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding (see
             `past_key_values`).
         """
+        # output_attentions: False  output_hidden_states: False return_dict: True
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -797,7 +802,7 @@ class BertModel(BertPreTrainedModel):
 
         batch_size, seq_length = input_shape
 
-        # past_key_values_length
+        # past_key_values_length 0
         past_key_values_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
 
         if token_type_ids is None:
@@ -807,7 +812,7 @@ class BertModel(BertPreTrainedModel):
                 token_type_ids = buffered_token_type_ids_expanded
             else:
                 token_type_ids = ops.zeros(input_shape, dtype=mindspore.int64)
-
+        # input_ids: (b, l) -> embedding_output: (b, l, d)
         embedding_output = self.embeddings(
             input_ids=input_ids,
             position_ids=position_ids,
@@ -821,6 +826,7 @@ class BertModel(BertPreTrainedModel):
 
         # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
         # ourselves in which case we just need to make it broadcastable to all heads.
+        # (1, 1, 1, 11)
         extended_attention_mask = self.get_extended_attention_mask(attention_mask, input_shape)
 
         # If a 2D or 3D attention mask is provided for the cross-attention
@@ -832,7 +838,7 @@ class BertModel(BertPreTrainedModel):
                 encoder_attention_mask = ops.ones(encoder_hidden_shape)
 
             encoder_extended_attention_mask = self.invert_attention_mask(encoder_attention_mask)
-        else:
+        else: # None
             encoder_extended_attention_mask = None
 
         # Prepare head mask if needed
@@ -840,6 +846,7 @@ class BertModel(BertPreTrainedModel):
         # attention_probs has shape bsz x n_heads x N x N
         # input head_mask has shape [num_heads] or [num_hidden_layers x num_heads]
         # and head_mask is converted to shape [num_hidden_layers x batch x num_heads x seq_length x seq_length]
+        # head_mask: list [num_hidden_layers] ?
         head_mask = self.get_head_mask(head_mask, self.config.num_hidden_layers)
 
         encoder_outputs = self.encoder(
