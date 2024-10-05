@@ -15,6 +15,7 @@
 import os
 import tempfile
 import unittest
+from mindspore import jit
 
 from mindnlp.transformers import AutoTokenizer, BertConfig
 from mindnlp.transformers.models.auto import get_values
@@ -686,22 +687,29 @@ class BertModelIntegrationTest(unittest.TestCase):
         import time
         _run_profiler = parse_flag_from_env('MS_ENABLE_RUNTIME_PROFILER', False)
         model = BertModel.from_pretrained("google-bert/bert-base-uncased")
+        model.fuse_qkv_projections()
+        model.jit()
+        # mindspore.set_context(mode=mindspore.GRAPH_MODE, device_target="Ascend")
         input_ids = mindspore.tensor([[0, 345, 232, 328, 740, 140, 1695, 69, 6078, 1588, 2]])
         attention_mask = mindspore.tensor([[0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]])
         infer_time = []
-        if _run_profiler:
-             _framework_profiler_step_start()
-        with no_grad():
-            for i in range(20):
-                s = time.time()
-                output = model(input_ids, attention_mask=attention_mask)[0]
-                t = time.time()
-                infer_time.append(t - s)
-        if _run_profiler:
-            _framework_profiler_step_end()
+        # with no_grad():
+        for i in range(20):
+            if i==19 and _run_profiler:
+                _framework_profiler_step_start()
+            s = time.time()
+            run_model(model, input_ids, attention_mask)
+            t = time.time()
+            if i==19 and _run_profiler:
+                _framework_profiler_step_end()
+            infer_time.append(t - s)
         print(infer_time)
         average_time_ms = sum(infer_time)/len(infer_time)*1000
         print(f'average inference time: {average_time_ms} ms')
+        
+def run_model(model, input_ids, attention_mask):
+    output = model(input_ids, attention_mask=attention_mask)[0]
+
 
 if __name__ == '__main__':
     My_test = BertModelIntegrationTest()

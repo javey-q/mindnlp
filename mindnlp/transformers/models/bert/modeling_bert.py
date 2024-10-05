@@ -70,7 +70,6 @@ _CHECKPOINT_FOR_SEQUENCE_CLASSIFICATION = "textattack/bert-base-uncased-yelp-pol
 _SEQ_CLASS_EXPECTED_OUTPUT = "'LABEL_1'"
 _SEQ_CLASS_EXPECTED_LOSS = 0.01
 
-
 class BertEmbeddings(nn.Module):
     """Construct the embeddings from word, position and token_type embeddings."""
 
@@ -83,9 +82,11 @@ class BertEmbeddings(nn.Module):
         # self.LayerNorm is not snake-cased to stick with TensorFlow model variable name and be able to load
         # any TensorFlow checkpoint file
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        self.dropout = nn.Dropout(p=config.hidden_dropout_prob)
         # position_ids (1, len position emb) is contiguous in memory and exported when serialized
         self.position_embedding_type = getattr(config, "position_embedding_type", "absolute")
+        # self.position_ids = Parameter(ops.arange(config.max_position_embeddings).broadcast_to((1, -1)), requires_grad=False)
+        # self.token_type_ids = Parameter(ops.zeros(self.position_ids.shape, dtype=mindspore.int64), requires_grad=False)
         self.register_buffer(
             "position_ids", ops.arange(config.max_position_embeddings).broadcast_to((1, -1)), persistent=False
         )
@@ -153,7 +154,7 @@ class BertSelfAttention(nn.Module):
         self.key = nn.Linear(config.hidden_size, self.all_head_size)
         self.value = nn.Linear(config.hidden_size, self.all_head_size)
 
-        self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
+        self.dropout = nn.Dropout(p=config.attention_probs_dropout_prob)
         self.position_embedding_type = position_embedding_type or getattr(
             config, "position_embedding_type", "absolute"
         )
@@ -168,23 +169,27 @@ class BertSelfAttention(nn.Module):
         x = x.view(new_x_shape)
         return x.permute(0, 2, 1, 3)
 
+    def transpose_for_qkv_scores(self, x: mindspore.Tensor) -> mindspore.Tensor:
+        new_x_shape = x.shape[:-1] + (3*self.num_attention_heads, self.attention_head_size)
+        x = x.view(new_x_shape)
+        return x.permute(0, 2, 1, 3)
+    
     def fuse_projections(self, fuse=True):
         dtype = self.query.weight.data.dtype
         use_bias = True
         if not self.is_decoder:
             # fetch weight matrices.
             concatenated_weights = ops.cat([self.query.weight.data, self.key.weight.data, self.value.weight.data])
-            print(concatenated_weights.dtype)
-            print(concatenated_weights.shape)
             in_features = concatenated_weights.shape[1]
             out_features = concatenated_weights.shape[0]
 
             # create a new single projection layer and copy over the weights.
             self.qkv = nn.Linear(in_features, out_features, bias=use_bias, dtype=dtype)
-            self.qkv.weight.set_data(concatenated_weights)
+            self.qkv.weight.data.assign_value(concatenated_weights)
             if use_bias:
                 concatenated_bias = ops.cat([self.query.bias.data, self.key.bias.data, self.value.bias.data])
-                self.qkv.bias.set_data(concatenated_bias)
+                self.qkv.bias.data.assign_value(concatenated_weights)
+        self.fused_projections = fuse
 
     def forward(
         self,
@@ -196,33 +201,38 @@ class BertSelfAttention(nn.Module):
         past_key_value: Optional[Tuple[Tuple[mindspore.Tensor]]] = None,
         output_attentions: Optional[bool] = False,
     ) -> Tuple[mindspore.Tensor]:
-        
-        mixed_query_layer = self.query(hidden_states)
-
-        # If this is instantiated as a cross-attention module, the keys
-        # and values come from an encoder; the attention mask needs to be
-        # such that the encoder's padding tokens are not attended to.
-        is_cross_attention = encoder_hidden_states is not None
-
-        if is_cross_attention and past_key_value is not None:
-            # reuse k,v, cross_attentions
-            key_layer = past_key_value[0]
-            value_layer = past_key_value[1]
-            attention_mask = encoder_attention_mask
-        elif is_cross_attention:
-            key_layer = self.transpose_for_scores(self.key(encoder_hidden_states))
-            value_layer = self.transpose_for_scores(self.value(encoder_hidden_states))
-            attention_mask = encoder_attention_mask
-        elif past_key_value is not None:
-            key_layer = self.transpose_for_scores(self.key(hidden_states))
-            value_layer = self.transpose_for_scores(self.value(hidden_states))
-            key_layer = ops.cat([past_key_value[0], key_layer.to(past_key_value[0].dtype)], dim=2)
-            value_layer = ops.cat([past_key_value[1], value_layer.to(past_key_value[1].dtype)], dim=2)
+        if self.fused_projections:
+            qkv = self.qkv(hidden_states)
+            qkv_layer = self.transpose_for_qkv_scores(qkv)
+            split_size = qkv_layer.shape[1] // 3
+            query_layer, key_layer, value_layer = ops.split(qkv_layer, split_size, dim=1)
         else:
-            key_layer = self.transpose_for_scores(self.key(hidden_states))
-            value_layer = self.transpose_for_scores(self.value(hidden_states))
+            mixed_query_layer = self.query(hidden_states)
 
-        query_layer = self.transpose_for_scores(mixed_query_layer)
+            # If this is instantiated as a cross-attention module, the keys
+            # and values come from an encoder; the attention mask needs to be
+            # such that the encoder's padding tokens are not attended to.
+            is_cross_attention = encoder_hidden_states is not None
+
+            if is_cross_attention and past_key_value is not None:
+                # reuse k,v, cross_attentions
+                key_layer = past_key_value[0]
+                value_layer = past_key_value[1]
+                attention_mask = encoder_attention_mask
+            elif is_cross_attention:
+                key_layer = self.transpose_for_scores(self.key(encoder_hidden_states))
+                value_layer = self.transpose_for_scores(self.value(encoder_hidden_states))
+                attention_mask = encoder_attention_mask
+            elif past_key_value is not None:
+                key_layer = self.transpose_for_scores(self.key(hidden_states))
+                value_layer = self.transpose_for_scores(self.value(hidden_states))
+                key_layer = ops.cat([past_key_value[0], key_layer.to(past_key_value[0].dtype)], dim=2)
+                value_layer = ops.cat([past_key_value[1], value_layer.to(past_key_value[1].dtype)], dim=2)
+            else:
+                key_layer = self.transpose_for_scores(self.key(hidden_states))
+                value_layer = self.transpose_for_scores(self.value(hidden_states))
+
+            query_layer = self.transpose_for_scores(mixed_query_layer)
 
         use_cache = past_key_value is not None
         if self.is_decoder:
@@ -315,7 +325,6 @@ class BertAttention(nn.Module):
         self.self = BERT_SELF_ATTENTION_CLASSES[config._attn_implementation](
             config, position_embedding_type=position_embedding_type
         )
-        self.self.fuse_projections()
         self.output = BertSelfOutput(config)
         self.pruned_heads = set()
 
@@ -763,6 +772,12 @@ class BertModel(BertPreTrainedModel):
         """
         for layer, heads in heads_to_prune.items():
             self.encoder.layer[layer].attention.prune_heads(heads)
+
+    def fuse_qkv_projections(self):
+
+        for module in self.modules():
+            if isinstance(module, BertSelfAttention):
+                module.fuse_projections(fuse=True)
 
     def forward(
         self,
