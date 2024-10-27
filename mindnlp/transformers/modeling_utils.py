@@ -827,7 +827,7 @@ class ModuleUtilsMixin:
         extended_attention_mask = (1.0 - extended_attention_mask) * float(ops.finfo(dtype).min)
         return extended_attention_mask
 
-    def get_flash_attention_mask(
+    def get_extended_flash_attention_mask(
         self, attention_mask: Tensor, input_shape: Tuple[int], dtype = None
     ) -> Tensor:
         batch_size, seq_length = input_shape
