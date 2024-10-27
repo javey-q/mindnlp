@@ -20,12 +20,14 @@ import unittest
 
 import numpy as np
 import requests
+from mindspore import jit
 
 from mindnlp.transformers import CLIPConfig, CLIPTextConfig, CLIPVisionConfig
 from mindnlp.utils.testing_utils import (
     require_mindspore,
     require_vision,
     slow,
+    parse_flag_from_env,
 )
 from mindnlp.utils import (
     is_mindspore_available,
@@ -43,6 +45,8 @@ from ...test_modeling_common import (
 )
 # from ...test_pipeline_mixin import PipelineTesterMixin
 
+from mindspore._c_expression import _framework_profiler_step_start
+from mindspore._c_expression import _framework_profiler_step_end
 
 if is_mindspore_available():
     import mindspore
@@ -606,8 +610,10 @@ class CLIPForImageClassificationModelTest(ModelTesterMixin, unittest.TestCase):
 
 # We will verify our results on an image of cute cats
 def prepare_img():
-    url = "http://images.cocodataset.org/val2017/000000039769.jpg"
-    im = Image.open(requests.get(url, stream=True).raw)
+    # url = "http://images.cocodataset.org/val2017/000000039769.jpg"
+    # im = Image.open(requests.get(url, stream=True).raw)
+    image_path = '/home/ma-user/work/mindnlp/.mindnlp/model/openai/clip-vit-base-patch32/000000039769.jpg'
+    im = Image.open(image_path)
     return im
 
 
@@ -616,7 +622,7 @@ def prepare_img():
 class CLIPModelIntegrationTest(unittest.TestCase):
     @slow
     def test_inference(self):
-        model_name = "openai/clip-vit-base-patch32"
+        model_name = "/home/ma-user/work/mindnlp/.mindnlp/model/openai/clip-vit-base-patch32"
         model = CLIPModel.from_pretrained(model_name)
         processor = CLIPProcessor.from_pretrained(model_name)
 
@@ -647,8 +653,11 @@ class CLIPModelIntegrationTest(unittest.TestCase):
     @slow
     def test_inference_time(self):
         import time
-        model_name = "openai/clip-vit-base-patch32"
+        _run_profiler = parse_flag_from_env('MS_ENABLE_RUNTIME_PROFILER', False)
+        model_name = "/home/ma-user/work/mindnlp/.mindnlp/model/openai/clip-vit-base-patch32"
         model = CLIPModel.from_pretrained(model_name)
+        model.fuse_qkv_projections()
+        model.jit()
         processor = CLIPProcessor.from_pretrained(model_name)
 
         image = prepare_img()
@@ -660,9 +669,19 @@ class CLIPModelIntegrationTest(unittest.TestCase):
         # forward pass
         with no_grad():
             for i in range(20):
+                if i==19 and _run_profiler:
+                    _framework_profiler_step_start()
                 s = time.time()
-                outputs = model(**inputs)
+                run_model(model, inputs)
                 t = time.time()
+                if i==19 and _run_profiler:
+                    _framework_profiler_step_end()
                 infer_time.append(t - s)
 
         print(infer_time)
+        average_time_ms = sum(infer_time[1:])/len(infer_time[1:])*1000
+        print(f'average inference time: {average_time_ms} ms')
+
+# @jit(compile_once=True)
+def run_model(model, inputs):
+    outputs = model(**dict(inputs), return_dict=False)
