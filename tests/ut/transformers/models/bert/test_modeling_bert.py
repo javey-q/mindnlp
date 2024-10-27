@@ -16,7 +16,9 @@ import os
 import tempfile
 import unittest
 from mindspore import jit
+from mindspore.amp import auto_mixed_precision
 
+from mindnlp.core import nn
 from mindnlp.transformers import AutoTokenizer, BertConfig
 from mindnlp.transformers.models.auto import get_values
 from mindnlp.utils.testing_utils import (
@@ -607,7 +609,9 @@ class BertModelTest(ModelTesterMixin, GenerationTesterMixin, unittest.TestCase):
 class BertModelIntegrationTest(unittest.TestCase):
     @slow
     def test_inference_no_head_absolute_embedding(self):
-        model = BertModel.from_pretrained("google-bert/bert-base-uncased")
+        model = BertModel.from_pretrained(".mindnlp/model/google-bert/bert-base-uncased")
+        model.fuse_qkv_projections()
+        model.jit()
         input_ids = mindspore.tensor([[0, 345, 232, 328, 740, 140, 1695, 69, 6078, 1588, 2]])
         attention_mask = mindspore.tensor([[0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]])
         with no_grad():
@@ -615,7 +619,7 @@ class BertModelIntegrationTest(unittest.TestCase):
         expected_shape = (1, 11, 768)
         self.assertEqual(output.shape, expected_shape)
         expected_slice = mindspore.tensor([[[0.4249, 0.1008, 0.7531], [0.3771, 0.1188, 0.7467], [0.4152, 0.1098, 0.7108]]])
-
+        # expected_slice = mindspore.tensor([[[0.2036, -0.3788,  0.8020], [0.1487, -0.3693,  0.7908], [0.1700, -0.3691, 0.7584]]])
         self.assertTrue(ops.allclose(output[:, 1:4, 1:4], expected_slice, atol=1e-3))
 
     @slow
@@ -686,12 +690,16 @@ class BertModelIntegrationTest(unittest.TestCase):
     def test_inference_time(self):
         import time
         _run_profiler = parse_flag_from_env('MS_ENABLE_RUNTIME_PROFILER', False)
-        model = BertModel.from_pretrained("google-bert/bert-base-uncased")
+        model = BertModel.from_pretrained(".mindnlp/model/google-bert/bert-base-uncased")
         model.fuse_qkv_projections()
+        # model.half()
+        # for module in model.modules():
+        #     if isinstance(module, (nn.Linear)):
+        #         module.half()
         model.jit()
         # mindspore.set_context(mode=mindspore.GRAPH_MODE, device_target="Ascend")
-        input_ids = mindspore.tensor([[0, 345, 232, 328, 740, 140, 1695, 69, 6078, 1588, 2]])
-        attention_mask = mindspore.tensor([[0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]])
+        input_ids = mindspore.tensor([[0] + [345, 232, 328, 740, 140, 1695, 69, 6078, 1588, 2]])
+        attention_mask = mindspore.tensor([[0] + [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]])
         infer_time = []
         # with no_grad():
         for i in range(20):
@@ -704,11 +712,12 @@ class BertModelIntegrationTest(unittest.TestCase):
                 _framework_profiler_step_end()
             infer_time.append(t - s)
         print(infer_time)
-        average_time_ms = sum(infer_time)/len(infer_time)*1000
+        average_time_ms = sum(infer_time[1:])/len(infer_time[1:])*1000
         print(f'average inference time: {average_time_ms} ms')
         
+@jit(compile_once=True)
 def run_model(model, input_ids, attention_mask):
-    output = model(input_ids, attention_mask=attention_mask)[0]
+    output = model(input_ids, attention_mask=attention_mask, return_dict=False)[0]
 
 
 if __name__ == '__main__':

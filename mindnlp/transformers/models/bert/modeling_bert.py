@@ -23,7 +23,11 @@ from typing import List, Optional, Tuple, Union
 import mindspore
 from mindnlp.core import nn, ops
 from mindnlp.core.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
-from mindspore import jit
+
+from mindspore import jit, JitConfig
+from mindspore import mint, Tensor
+from mindspore.ops.operations.nn_ops import FlashAttentionScore
+from mindspore import ops as mind_ops
 
 from ...activations import ACT2FN
 from ...modeling_outputs import (
@@ -45,7 +49,7 @@ from ....utils import (
 )
 from .configuration_bert import BertConfig
 
-
+# jitconfig = JitConfig(jit_level="O1")
 logger = logging.get_logger(__name__)
 
 _CHECKPOINT_FOR_DOC = "google-bert/bert-base-uncased"
@@ -85,8 +89,7 @@ class BertEmbeddings(nn.Module):
         self.dropout = nn.Dropout(p=config.hidden_dropout_prob)
         # position_ids (1, len position emb) is contiguous in memory and exported when serialized
         self.position_embedding_type = getattr(config, "position_embedding_type", "absolute")
-        # self.position_ids = Parameter(ops.arange(config.max_position_embeddings).broadcast_to((1, -1)), requires_grad=False)
-        # self.token_type_ids = Parameter(ops.zeros(self.position_ids.shape, dtype=mindspore.int64), requires_grad=False)
+
         self.register_buffer(
             "position_ids", ops.arange(config.max_position_embeddings).broadcast_to((1, -1)), persistent=False
         )
@@ -102,6 +105,7 @@ class BertEmbeddings(nn.Module):
         inputs_embeds: Optional[mindspore.Tensor] = None,
         past_key_values_length: int = 0,
     ) -> mindspore.Tensor:
+
         if input_ids is not None:
             input_shape = input_ids.shape
         else:
@@ -110,7 +114,8 @@ class BertEmbeddings(nn.Module):
         seq_length = input_shape[1]
 
         if position_ids is None:
-            position_ids = self.position_ids[:, past_key_values_length : seq_length + past_key_values_length]
+            position_ids = mint.narrow(self.position_ids, 1, past_key_values_length, seq_length + past_key_values_length)
+            # position_ids = self.position_ids[:, past_key_values_length : seq_length + past_key_values_length]
 
         # Setting the token_type_ids to the registered buffer in constructor where it is all zeros, which usually occurs
         # when its auto-generated, registered buffer helps users when tracing the model without passing token_type_ids, solves
@@ -128,10 +133,11 @@ class BertEmbeddings(nn.Module):
             inputs_embeds = self.word_embeddings(input_ids)
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
 
-        embeddings = inputs_embeds + token_type_embeddings
         if self.position_embedding_type == "absolute":
             position_embeddings = self.position_embeddings(position_ids)
-            embeddings += position_embeddings
+            embeddings = inputs_embeds + token_type_embeddings + position_embeddings
+        else:
+            embeddings = inputs_embeds + token_type_embeddings
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
         return embeddings
@@ -154,25 +160,44 @@ class BertSelfAttention(nn.Module):
         self.key = nn.Linear(config.hidden_size, self.all_head_size)
         self.value = nn.Linear(config.hidden_size, self.all_head_size)
 
-        self.dropout = nn.Dropout(p=config.attention_probs_dropout_prob)
+        if not config.use_flash_attention:
+            self.dropout = nn.Dropout(p=config.attention_probs_dropout_prob)
         self.position_embedding_type = position_embedding_type or getattr(
             config, "position_embedding_type", "absolute"
-        )
+        ) # absolute
         if self.position_embedding_type in ('relative_key', 'relative_key_query'):
             self.max_position_embeddings = config.max_position_embeddings
             self.distance_embedding = nn.Embedding(2 * config.max_position_embeddings - 1, self.attention_head_size)
-
+        
         self.is_decoder = config.is_decoder
+        self.fused_projections = False
+        self.use_flash_attention = config.use_flash_attention
+
+        if self.use_flash_attention:
+            self.training = False  # FIXME
+            self.keep_prob = 1.0 - config.attention_probs_dropout_prob if self.training else 1.0
+            self.flash_attention = FlashAttentionScore(head_num=self.num_attention_heads, 
+                                                    pre_tokens=65536,
+                                                    next_tokens=65536,
+                                                    keep_prob=self.keep_prob,
+                                                    scale_value=1.0 / math.sqrt(self.attention_head_size),
+                                                    inner_precise=0,
+                                                    input_layout="BNSD")
+            if self.keep_prob < 1.0:
+                self.keep_prob_tensor = Tensor(self.keep_prob, dtype=mindspore.float16)
+                self.drop_gen_mask = mind_ops.operations.DropoutGenMask()
 
     def transpose_for_scores(self, x: mindspore.Tensor) -> mindspore.Tensor:
         new_x_shape = x.shape[:-1] + (self.num_attention_heads, self.attention_head_size)
         x = x.view(new_x_shape)
-        return x.permute(0, 2, 1, 3)
+        # return x.permute(0, 2, 1, 3)
+        return mint.permute(x, (0, 2, 1, 3))
 
     def transpose_for_qkv_scores(self, x: mindspore.Tensor) -> mindspore.Tensor:
         new_x_shape = x.shape[:-1] + (3*self.num_attention_heads, self.attention_head_size)
         x = x.view(new_x_shape)
-        return x.permute(0, 2, 1, 3)
+        # return x.permute(0, 2, 1, 3)
+        return mint.permute(x, (0, 2, 1, 3))
     
     def fuse_projections(self, fuse=True):
         dtype = self.query.weight.data.dtype
@@ -188,7 +213,7 @@ class BertSelfAttention(nn.Module):
             self.qkv.weight.data.assign_value(concatenated_weights)
             if use_bias:
                 concatenated_bias = ops.cat([self.query.bias.data, self.key.bias.data, self.value.bias.data])
-                self.qkv.bias.data.assign_value(concatenated_weights)
+                self.qkv.bias.data.assign_value(concatenated_bias)
         self.fused_projections = fuse
 
     def forward(
@@ -203,9 +228,12 @@ class BertSelfAttention(nn.Module):
     ) -> Tuple[mindspore.Tensor]:
         if self.fused_projections:
             qkv = self.qkv(hidden_states)
+            if self.use_flash_attention:
+                qkv = qkv.to(dtype=mindspore.float16)
             qkv_layer = self.transpose_for_qkv_scores(qkv)
             split_size = qkv_layer.shape[1] // 3
-            query_layer, key_layer, value_layer = ops.split(qkv_layer, split_size, dim=1)
+            # query_layer, key_layer, value_layer = ops.split(qkv_layer, split_size, dim=1)
+            query_layer, key_layer, value_layer = mint.split(qkv_layer, split_size, dim=1)
         else:
             mixed_query_layer = self.query(hidden_states)
 
@@ -245,53 +273,70 @@ class BertSelfAttention(nn.Module):
             # if encoder bi-directional self-attention `past_key_value` is always `None`
             past_key_value = (key_layer, value_layer)
 
-        # Take the dot product between "query" and "key" to get the raw attention scores.
-        attention_scores = ops.matmul(query_layer, ops.transpose(key_layer, -1, -2))
-
-        if self.position_embedding_type in ('relative_key', 'relative_key_query'):
-            query_length, key_length = query_layer.shape[2], key_layer.shape[2]
-            if use_cache:
-                position_ids_l = mindspore.tensor(key_length - 1, dtype=mindspore.int64).view(
-                    -1, 1
-                )
+        if self.use_flash_attention:
+            bsz, head_num, seq_len, _ = query_layer.shape
+            if self.keep_prob < 1.0:
+                drop_mask = ops.reshape(self.drop_gen_mask((bsz, head_num, seq_len, seq_len), self.keep_prob_tensor),
+                                    ((bsz, head_num, seq_len, seq_len // 8)))
             else:
-                position_ids_l = ops.arange(query_length, dtype=mindspore.int64).view(-1, 1)
-            position_ids_r = ops.arange(key_length, dtype=mindspore.int64).view(1, -1)
-            distance = position_ids_l - position_ids_r
+                drop_mask = None
+            _, _, attention_probs, context_layer = self.flash_attention(query_layer, key_layer, value_layer, None, drop_mask, None, attention_mask, None)
+        else:
+            # Take the dot product between "query" and "key" to get the raw attention scores.
+            attention_scores = ops.matmul(query_layer, ops.transpose(key_layer, -1, -2))
 
-            positional_embedding = self.distance_embedding(distance + self.max_position_embeddings - 1)
-            positional_embedding = positional_embedding.to(dtype=query_layer.dtype)  # fp16 compatibility
+            if self.position_embedding_type in ('relative_key', 'relative_key_query'):
+                query_length, key_length = query_layer.shape[2], key_layer.shape[2]
+                if use_cache:
+                    position_ids_l = mindspore.tensor(key_length - 1, dtype=mindspore.int64).view(
+                        -1, 1
+                    )
+                else:
+                    position_ids_l = ops.arange(query_length, dtype=mindspore.int64).view(-1, 1)
+                position_ids_r = ops.arange(key_length, dtype=mindspore.int64).view(1, -1)
+                distance = position_ids_l - position_ids_r
 
-            if self.position_embedding_type == "relative_key":
-                relative_position_scores = ops.einsum("bhld,lrd->bhlr", query_layer, positional_embedding)
-                attention_scores = attention_scores + relative_position_scores
-            elif self.position_embedding_type == "relative_key_query":
-                relative_position_scores_query = ops.einsum("bhld,lrd->bhlr", query_layer, positional_embedding)
-                relative_position_scores_key = ops.einsum("bhrd,lrd->bhlr", key_layer, positional_embedding)
-                attention_scores = attention_scores + relative_position_scores_query + relative_position_scores_key
+                positional_embedding = self.distance_embedding(distance + self.max_position_embeddings - 1)
+                positional_embedding = positional_embedding.to(dtype=query_layer.dtype)  # fp16 compatibility
 
-        attention_scores = attention_scores / math.sqrt(self.attention_head_size)
-        if attention_mask is not None:
-            # Apply the attention mask is (precomputed for all layers in BertModel forward() function)
-            attention_scores = attention_scores + attention_mask
+                if self.position_embedding_type == "relative_key":
+                    relative_position_scores = ops.einsum("bhld,lrd->bhlr", query_layer, positional_embedding)
+                    attention_scores = attention_scores + relative_position_scores
+                elif self.position_embedding_type == "relative_key_query":
+                    relative_position_scores_query = ops.einsum("bhld,lrd->bhlr", query_layer, positional_embedding)
+                    relative_position_scores_key = ops.einsum("bhrd,lrd->bhlr", key_layer, positional_embedding)
+                    attention_scores = attention_scores + relative_position_scores_query + relative_position_scores_key
 
-        # Normalize the attention scores to probabilities.
-        attention_probs = nn.functional.softmax(attention_scores, dim=-1)
+            attention_scores = attention_scores / math.sqrt(self.attention_head_size)
 
-        # This is actually dropping out entire tokens to attend to, which might
-        # seem a bit unusual, but is taken from the original Transformer paper.
-        attention_probs = self.dropout(attention_probs)
+            if attention_mask is not None:
+                # Apply the attention mask is (precomputed for all layers in BertModel forward() function)
+                attention_scores = attention_scores + attention_mask
 
-        # Mask heads if we want to
-        if head_mask is not None:
-            attention_probs = attention_probs * head_mask
+            # attention_scores = attention_scores.to(dtype=mindspore.float32)
+            # Normalize the attention scores to probabilities.
+            attention_probs = nn.functional.softmax(attention_scores, dim=-1)
+            # attention_probs = attention_probs.to(dtype=mindspore.float16)
 
-        context_layer = ops.matmul(attention_probs, value_layer)
+            # This is actually dropping out entire tokens to attend to, which might
+            # seem a bit unusual, but is taken from the original Transformer paper.
+            attention_probs = self.dropout(attention_probs)
 
-        context_layer = context_layer.permute(0, 2, 1, 3)
-        # ?
+            # Mask heads if we want to
+            if head_mask is not None:
+                # Todo: head_mask
+                attention_probs = attention_probs * head_mask
+
+            context_layer = ops.matmul(attention_probs, value_layer)
+        
+        # context_layer = context_layer.permute(0, 2, 1, 3)
+        context_layer = mint.permute(context_layer, (0, 2, 1, 3))
         new_context_layer_shape = context_layer.shape[:-2] + (self.all_head_size,)
         context_layer = context_layer.view(new_context_layer_shape)
+        if self.use_flash_attention:
+            context_layer = context_layer.to(dtype=mindspore.float32)
+            if output_attentions:
+                attention_probs = attention_probs.to(dtype=mindspore.float32)
 
         outputs = (context_layer, attention_probs) if output_attentions else (context_layer,)
 
@@ -375,13 +420,15 @@ class BertIntermediate(nn.Module):
         super().__init__()
         self.dense = nn.Linear(config.hidden_size, config.intermediate_size)
         if isinstance(config.hidden_act, str):
-            self.intermediate_act_fn = ACT2FN[config.hidden_act]
+            # self.intermediate_act_fn = ACT2FN[config.hidden_act]
+            self.intermediate_act_fn = nn.GELU() # approximate='tanh'
         else:
             self.intermediate_act_fn = config.hidden_act
 
     def forward(self, hidden_states: mindspore.Tensor) -> mindspore.Tensor:
         hidden_states = self.dense(hidden_states)
         hidden_states = self.intermediate_act_fn(hidden_states)
+        # hidden_states = mind_ops.fast_gelu(hidden_states)
         return hidden_states
 
 
@@ -746,6 +793,7 @@ class BertModel(BertPreTrainedModel):
 
     def __init__(self, config, add_pooling_layer=True):
         super().__init__(config)
+        config.use_flash_attention = True
         self.config = config
 
         self.embeddings = BertEmbeddings(config)
@@ -756,6 +804,7 @@ class BertModel(BertPreTrainedModel):
         self.attn_implementation = config._attn_implementation
         self.position_embedding_type = config.position_embedding_type
 
+        self.use_flash_attention = config.use_flash_attention
         # Initialize weights and apply final processing
         self.post_init()
 
@@ -774,11 +823,11 @@ class BertModel(BertPreTrainedModel):
             self.encoder.layer[layer].attention.prune_heads(heads)
 
     def fuse_qkv_projections(self):
-
         for module in self.modules():
             if isinstance(module, BertSelfAttention):
                 module.fuse_projections(fuse=True)
 
+    # @jit(compile_once=True)
     def forward(
         self,
         input_ids: Optional[mindspore.Tensor] = None,
@@ -844,9 +893,13 @@ class BertModel(BertPreTrainedModel):
 
         if token_type_ids is None:
             if hasattr(self.embeddings, "token_type_ids"):
-                buffered_token_type_ids = self.embeddings.token_type_ids[:, :seq_length]
-                buffered_token_type_ids_expanded = buffered_token_type_ids.broadcast_to((batch_size, seq_length))
-                token_type_ids = buffered_token_type_ids_expanded
+                buffered_token_type_ids = mint.narrow(self.embeddings.token_type_ids, 1, 0, seq_length)
+                # buffered_token_type_ids = self.embeddings.token_type_ids[:, :seq_length]
+                if batch_size>1:
+                    buffered_token_type_ids_expanded = buffered_token_type_ids.broadcast_to((batch_size, seq_length))
+                    token_type_ids = buffered_token_type_ids_expanded
+                else:
+                    token_type_ids = buffered_token_type_ids
             else:
                 token_type_ids = ops.zeros(input_shape, dtype=mindspore.int64)
         # input_ids: (b, l) -> embedding_output: (b, l, d)
@@ -864,7 +917,10 @@ class BertModel(BertPreTrainedModel):
         # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
         # ourselves in which case we just need to make it broadcastable to all heads.
         # (1, 1, 1, 11)
-        extended_attention_mask = self.get_extended_attention_mask(attention_mask, input_shape)
+        if self.use_flash_attention:
+            extended_attention_mask = self.get_flash_attention_mask(attention_mask, input_shape)
+        else:  
+            extended_attention_mask = self.get_extended_attention_mask(attention_mask, input_shape, dtype=embedding_output.dtype)
 
         # If a 2D or 3D attention mask is provided for the cross-attention
         # we need to make broadcastable to [batch_size, num_heads, seq_length, seq_length]
@@ -883,21 +939,32 @@ class BertModel(BertPreTrainedModel):
         # attention_probs has shape bsz x n_heads x N x N
         # input head_mask has shape [num_heads] or [num_hidden_layers x num_heads]
         # and head_mask is converted to shape [num_hidden_layers x batch x num_heads x seq_length x seq_length]
-        # head_mask: list [num_hidden_layers] ?
-        head_mask = self.get_head_mask(head_mask, self.config.num_hidden_layers)
-
-        encoder_outputs = self.encoder(
-            embedding_output,
-            attention_mask=extended_attention_mask,
-            head_mask=head_mask,
-            encoder_hidden_states=encoder_hidden_states,
-            encoder_attention_mask=encoder_extended_attention_mask,
-            past_key_values=past_key_values,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )
+        if head_mask or past_key_values:
+            # FIXME: head_mask unsupport mindspore.jit
+            head_mask = self.get_head_mask(head_mask, self.config.num_hidden_layers)
+            encoder_outputs = self.encoder(
+                embedding_output,
+                attention_mask=extended_attention_mask,
+                head_mask=head_mask,
+                encoder_hidden_states=encoder_hidden_states,
+                encoder_attention_mask=encoder_extended_attention_mask,
+                past_key_values=past_key_values,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
+        else:
+            encoder_outputs = self.encoder(
+                embedding_output,
+                attention_mask=extended_attention_mask,
+                encoder_hidden_states=encoder_hidden_states,
+                encoder_attention_mask=encoder_extended_attention_mask,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
         sequence_output = encoder_outputs[0]
         pooled_output = self.pooler(sequence_output) if self.pooler is not None else None
 
