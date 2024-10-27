@@ -14,11 +14,16 @@
 # limitations under the License.
 """MindSpore CLIP model."""
 
+import math
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple, Union
 
 import mindspore
 from mindspore import jit
+from mindspore import mint, Tensor
+from mindspore.ops.operations.nn_ops import FlashAttentionScore
+from mindspore import ops as mind_ops
+
 from mindnlp.core import nn, ops
 from mindnlp.core.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
@@ -242,6 +247,7 @@ class CLIPAttention(nn.Module):
         self.out_proj = nn.Linear(self.embed_dim, self.embed_dim)
 
         self.fused_projections = False
+        self.use_flash_attention = False
 
     def _shape(self, tensor: mindspore.Tensor, seq_len: int, bsz: int):
         return ops.transpose(tensor.view(bsz, seq_len, self.num_heads, self.head_dim), 1, 2)
@@ -268,6 +274,21 @@ class CLIPAttention(nn.Module):
             concatenated_bias = ops.cat([self.q_proj.bias.data, self.k_proj.bias.data, self.v_proj.bias.data])
             self.qkv_proj.bias.data.assign_value(concatenated_bias)
         self.fused_projections = fuse
+    
+    def insert_flash_attention(self):
+        self.training = False  # FIXME
+        self.keep_prob = 1.0 - self.dropout if self.training else 1.0
+        self.flash_attention = FlashAttentionScore(head_num=self.num_heads, 
+                                                pre_tokens=65536,
+                                                next_tokens=65536,
+                                                keep_prob=self.keep_prob,
+                                                scale_value=1.0 / math.sqrt(self.head_dim),
+                                                inner_precise=0,
+                                                input_layout="BNSD")
+        if self.keep_prob < 1.0:
+            self.keep_prob_tensor = Tensor(self.keep_prob, dtype=mindspore.float16)
+            self.drop_gen_mask = mind_ops.operations.DropoutGenMask()
+        self.use_flash_attention = True
 
     def forward(
         self,
@@ -282,17 +303,17 @@ class CLIPAttention(nn.Module):
 
         if self.fused_projections:
             qkv_states = self.qkv_proj(hidden_states)
-            # if self.use_flash_attention:
-            #     qkv_states = qkv_states.to(dtype=mindspore.float16)
+            if self.use_flash_attention:
+                qkv_states = qkv_states.to(dtype=mindspore.float16)
             qkv_states = self.transpose_for_qkv_scores(qkv_states)
             split_size = qkv_states.shape[1] // 3
             query_states, key_states, value_states = ops.split(qkv_states, split_size, dim=1)
             # query_layer, key_layer, value_layer = mint.split(qkv_layer, split_size, dim=1)
 
-            proj_shape = (bsz * self.num_heads, -1, self.head_dim)
-            query_states = key_states.view(*proj_shape)
-            key_states = key_states.view(*proj_shape)
-            value_states = value_states.view(*proj_shape)
+            # proj_shape = (bsz * self.num_heads, -1, self.head_dim)
+            # query_states = key_states.view(*proj_shape)
+            # key_states = key_states.view(*proj_shape)
+            # value_states = value_states.view(*proj_shape)
         else:
             # get query proj
             query_states = self.q_proj(hidden_states) * self.scale
@@ -304,58 +325,73 @@ class CLIPAttention(nn.Module):
             key_states = key_states.view(*proj_shape)
             value_states = value_states.view(*proj_shape)
 
-        src_len = key_states.shape[1]
-        attn_weights = ops.bmm(query_states, ops.transpose(key_states, 1, 2))
+        if self.use_flash_attention:
+            bsz, head_num, seq_len, _ = query_states.shape
+            if self.keep_prob < 1.0:
+                drop_mask = ops.reshape(self.drop_gen_mask((bsz, head_num, seq_len, seq_len), self.keep_prob_tensor),
+                                    ((bsz, head_num, seq_len, seq_len // 8)))
+            else:
+                drop_mask = None
 
-        if attn_weights.shape != (bsz * self.num_heads, tgt_len, src_len):
-            raise ValueError(
-                f"Attention weights should be of size {(bsz * self.num_heads, tgt_len, src_len)}, but is"
-                f" {attn_weights.shape}"
-            )
+            _, _, attn_weights, attn_output = self.flash_attention(query_states, key_states, value_states, None, drop_mask, None, causal_attention_mask, None)
+        else:
+            src_len = key_states.shape[1]
+            attn_weights = ops.bmm(query_states, ops.transpose(key_states, 1, 2))
 
-        # apply the causal_attention_mask first
-        if causal_attention_mask is not None:
-            if causal_attention_mask.shape != (bsz, 1, tgt_len, src_len):
+            if attn_weights.shape != (bsz * self.num_heads, tgt_len, src_len):
                 raise ValueError(
-                    f"Attention mask should be of size {(bsz, 1, tgt_len, src_len)}, but is"
-                    f" {causal_attention_mask.shape}"
+                    f"Attention weights should be of size {(bsz * self.num_heads, tgt_len, src_len)}, but is"
+                    f" {attn_weights.shape}"
                 )
-            attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len) + causal_attention_mask
-            attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
 
-        if attention_mask is not None:
-            if attention_mask.shape != (bsz, 1, tgt_len, src_len):
+            # apply the causal_attention_mask first
+            if causal_attention_mask is not None:
+                if causal_attention_mask.shape != (bsz, 1, tgt_len, src_len):
+                    raise ValueError(
+                        f"Attention mask should be of size {(bsz, 1, tgt_len, src_len)}, but is"
+                        f" {causal_attention_mask.shape}"
+                    )
+                attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len) + causal_attention_mask
+                attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
+
+            if attention_mask is not None:
+                if attention_mask.shape != (bsz, 1, tgt_len, src_len):
+                    raise ValueError(
+                        f"Attention mask should be of size {(bsz, 1, tgt_len, src_len)}, but is {attention_mask.shape}"
+                    )
+                attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len) + attention_mask
+                attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
+
+            attn_weights = nn.functional.softmax(attn_weights, dim=-1)
+
+            attn_probs = nn.functional.dropout(attn_weights, p=self.dropout, training=self.training)
+
+            attn_output = ops.bmm(attn_probs, value_states)
+
+            if attn_output.shape != (bsz * self.num_heads, tgt_len, self.head_dim):
                 raise ValueError(
-                    f"Attention mask should be of size {(bsz, 1, tgt_len, src_len)}, but is {attention_mask.shape}"
+                    f"`attn_output` should be of size {(bsz, self.num_heads, tgt_len, self.head_dim)}, but is"
+                    f" {attn_output.shape}"
                 )
-            attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len) + attention_mask
-            attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
+            attn_output = attn_output.view(bsz, self.num_heads, tgt_len, self.head_dim)
 
-        attn_weights = nn.functional.softmax(attn_weights, dim=-1)
+        attn_output = ops.transpose(attn_output, 1, 2)
+        attn_output = attn_output.reshape(bsz, tgt_len, embed_dim)
+
+        if self.use_flash_attention:
+            attn_output = attn_output.to(dtype=mindspore.float32)
+            if output_attentions:
+                attn_weights = attn_weights.to(dtype=mindspore.float32)
 
         if output_attentions:
             # this operation is a bit akward, but it's required to
             # make sure that attn_weights keeps its gradient.
             # In order to do so, attn_weights have to reshaped
             # twice and have to be reused in the following
-            attn_weights_reshaped = attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
-            attn_weights = attn_weights_reshaped.view(bsz * self.num_heads, tgt_len, src_len)
+            attn_weights_reshaped = attn_weights.view(bsz, self.num_heads, tgt_len, -1)
+            attn_weights = attn_weights_reshaped.view(bsz * self.num_heads, tgt_len, -1)
         else:
             attn_weights_reshaped = None
-
-        attn_probs = nn.functional.dropout(attn_weights, p=self.dropout, training=self.training)
-
-        attn_output = ops.bmm(attn_probs, value_states)
-
-        if attn_output.shape != (bsz * self.num_heads, tgt_len, self.head_dim):
-            raise ValueError(
-                f"`attn_output` should be of size {(bsz, self.num_heads, tgt_len, self.head_dim)}, but is"
-                f" {attn_output.shape}"
-            )
-
-        attn_output = attn_output.view(bsz, self.num_heads, tgt_len, self.head_dim)
-        attn_output = ops.transpose(attn_output, 1, 2)
-        attn_output = attn_output.reshape(bsz, tgt_len, embed_dim)
 
         attn_output = self.out_proj(attn_output)
 
@@ -897,6 +933,7 @@ class CLIPModel(CLIPPreTrainedModel):
 
         # Initialize weights and apply final processing
         self.post_init()
+        self.use_flash_attention = False
 
     def get_text_features(
         self,
@@ -997,6 +1034,12 @@ class CLIPModel(CLIPPreTrainedModel):
             if isinstance(module, CLIPAttention):
                 module.fuse_projections(fuse=True)
 
+    def insert_flash_attention(self):
+        self.use_flash_attention = True
+        for module in self.modules():
+            if isinstance(module, CLIPAttention):
+                module.insert_flash_attention()
+
     def forward(
         self,
         input_ids: Optional[mindspore.Tensor] = None,
@@ -1049,7 +1092,7 @@ class CLIPModel(CLIPPreTrainedModel):
         input_shape = input_ids.shape
         # FIXME: mindspore.float32
         causal_attention_mask = _create_4d_causal_attention_mask(
-            input_shape, mindspore.float32
+            input_shape, mindspore.float32, use_flash_attention=self.use_flash_attention
         )
 
         text_outputs = self.text_model(
