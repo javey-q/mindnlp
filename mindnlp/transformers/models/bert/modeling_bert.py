@@ -160,8 +160,8 @@ class BertSelfAttention(nn.Module):
         self.key = nn.Linear(config.hidden_size, self.all_head_size)
         self.value = nn.Linear(config.hidden_size, self.all_head_size)
 
-        if not config.use_flash_attention:
-            self.dropout = nn.Dropout(p=config.attention_probs_dropout_prob)
+        self.attention_probs_dropout_prob = config.attention_probs_dropout_prob
+        self.dropout = nn.Dropout(p=config.attention_probs_dropout_prob)
         self.position_embedding_type = position_embedding_type or getattr(
             config, "position_embedding_type", "absolute"
         ) # absolute
@@ -171,21 +171,7 @@ class BertSelfAttention(nn.Module):
         
         self.is_decoder = config.is_decoder
         self.fused_projections = False
-        self.use_flash_attention = config.use_flash_attention
-
-        if self.use_flash_attention:
-            self.training = False  # FIXME
-            self.keep_prob = 1.0 - config.attention_probs_dropout_prob if self.training else 1.0
-            self.flash_attention = FlashAttentionScore(head_num=self.num_attention_heads, 
-                                                    pre_tokens=65536,
-                                                    next_tokens=65536,
-                                                    keep_prob=self.keep_prob,
-                                                    scale_value=1.0 / math.sqrt(self.attention_head_size),
-                                                    inner_precise=0,
-                                                    input_layout="BNSD")
-            if self.keep_prob < 1.0:
-                self.keep_prob_tensor = Tensor(self.keep_prob, dtype=mindspore.float16)
-                self.drop_gen_mask = mind_ops.operations.DropoutGenMask()
+        self.use_flash_attention = False
 
     def transpose_for_scores(self, x: mindspore.Tensor) -> mindspore.Tensor:
         new_x_shape = x.shape[:-1] + (self.num_attention_heads, self.attention_head_size)
@@ -201,7 +187,7 @@ class BertSelfAttention(nn.Module):
     
     def fuse_projections(self, fuse=True):
         dtype = self.query.weight.data.dtype
-        use_bias = True
+        use_bias = True # FIXME
         if not self.is_decoder:
             # fetch weight matrices.
             concatenated_weights = ops.cat([self.query.weight.data, self.key.weight.data, self.value.weight.data])
@@ -215,6 +201,22 @@ class BertSelfAttention(nn.Module):
                 concatenated_bias = ops.cat([self.query.bias.data, self.key.bias.data, self.value.bias.data])
                 self.qkv.bias.data.assign_value(concatenated_bias)
         self.fused_projections = fuse
+    
+    def insert_flash_attention(self):
+        del self.dropout
+        self.training = False  # FIXME
+        self.keep_prob = 1.0 - self.attention_probs_dropout_prob if self.training else 1.0
+        self.flash_attention = FlashAttentionScore(head_num=self.num_attention_heads, 
+                                                pre_tokens=65536,
+                                                next_tokens=65536,
+                                                keep_prob=self.keep_prob,
+                                                scale_value=1.0 / math.sqrt(self.attention_head_size),
+                                                inner_precise=0,
+                                                input_layout="BNSD")
+        if self.keep_prob < 1.0:
+            self.keep_prob_tensor = Tensor(self.keep_prob, dtype=mindspore.float16)
+            self.drop_gen_mask = mind_ops.operations.DropoutGenMask()
+        self.use_flash_attention = True
 
     def forward(
         self,
@@ -261,6 +263,10 @@ class BertSelfAttention(nn.Module):
                 value_layer = self.transpose_for_scores(self.value(hidden_states))
 
             query_layer = self.transpose_for_scores(mixed_query_layer)
+            if self.use_flash_attention:
+                query_layer = query_layer.to(dtype=mindspore.float16)
+                key_layer = key_layer.to(dtype=mindspore.float16)
+                value_layer = value_layer.to(dtype=mindspore.float16)
 
         use_cache = past_key_value is not None
         if self.is_decoder:
@@ -793,7 +799,6 @@ class BertModel(BertPreTrainedModel):
 
     def __init__(self, config, add_pooling_layer=True):
         super().__init__(config)
-        config.use_flash_attention = True
         self.config = config
 
         self.embeddings = BertEmbeddings(config)
@@ -804,9 +809,9 @@ class BertModel(BertPreTrainedModel):
         self.attn_implementation = config._attn_implementation
         self.position_embedding_type = config.position_embedding_type
 
-        self.use_flash_attention = config.use_flash_attention
         # Initialize weights and apply final processing
         self.post_init()
+        self.use_flash_attention = False
 
     def get_input_embeddings(self):
         return self.embeddings.word_embeddings
@@ -827,6 +832,12 @@ class BertModel(BertPreTrainedModel):
             if isinstance(module, BertSelfAttention):
                 module.fuse_projections(fuse=True)
 
+    def insert_flash_attention(self):
+        self.use_flash_attention = True
+        for module in self.modules():
+            if isinstance(module, BertSelfAttention):
+                module.insert_flash_attention()
+                
     # @jit(compile_once=True)
     def forward(
         self,
@@ -918,7 +929,7 @@ class BertModel(BertPreTrainedModel):
         # ourselves in which case we just need to make it broadcastable to all heads.
         # (1, 1, 1, 11)
         if self.use_flash_attention:
-            extended_attention_mask = self.get_flash_attention_mask(attention_mask, input_shape)
+            extended_attention_mask = self.get_extended_flash_attention_mask(attention_mask, input_shape)
         else:  
             extended_attention_mask = self.get_extended_attention_mask(attention_mask, input_shape, dtype=embedding_output.dtype)
 
