@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Optional, Tuple, Union
 
 import mindspore
+from mindspore import jit
 from mindnlp.core import nn, ops
 from mindnlp.core.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
@@ -240,8 +241,33 @@ class CLIPAttention(nn.Module):
         self.q_proj = nn.Linear(self.embed_dim, self.embed_dim)
         self.out_proj = nn.Linear(self.embed_dim, self.embed_dim)
 
+        self.fused_projections = False
+
     def _shape(self, tensor: mindspore.Tensor, seq_len: int, bsz: int):
         return ops.transpose(tensor.view(bsz, seq_len, self.num_heads, self.head_dim), 1, 2)
+
+    def transpose_for_qkv_scores(self, x: mindspore.Tensor) -> mindspore.Tensor:
+        new_x_shape = x.shape[:-1] + (3*self.num_heads, self.head_dim)
+        x = x.view(new_x_shape)
+        return x.permute(0, 2, 1, 3)
+        # return mint.permute(x, (0, 2, 1, 3))
+    
+    def fuse_projections(self, fuse=True):
+        dtype = self.q_proj.weight.data.dtype
+        use_bias = True # FIXME
+
+        # fetch weight matrices.
+        concatenated_weights = ops.cat([self.q_proj.weight.data, self.k_proj.weight.data, self.v_proj.weight.data])
+        in_features = concatenated_weights.shape[1]
+        out_features = concatenated_weights.shape[0]
+
+        # create a new single projection layer and copy over the weights.
+        self.qkv_proj = nn.Linear(in_features, out_features, bias=use_bias, dtype=dtype)
+        self.qkv_proj.weight.data.assign_value(concatenated_weights)
+        if use_bias:
+            concatenated_bias = ops.cat([self.q_proj.bias.data, self.k_proj.bias.data, self.v_proj.bias.data])
+            self.qkv_proj.bias.data.assign_value(concatenated_bias)
+        self.fused_projections = fuse
 
     def forward(
         self,
@@ -254,15 +280,29 @@ class CLIPAttention(nn.Module):
 
         bsz, tgt_len, embed_dim = hidden_states.shape
 
-        # get query proj
-        query_states = self.q_proj(hidden_states) * self.scale
-        key_states = self._shape(self.k_proj(hidden_states), -1, bsz)
-        value_states = self._shape(self.v_proj(hidden_states), -1, bsz)
+        if self.fused_projections:
+            qkv_states = self.qkv_proj(hidden_states)
+            # if self.use_flash_attention:
+            #     qkv_states = qkv_states.to(dtype=mindspore.float16)
+            qkv_states = self.transpose_for_qkv_scores(qkv_states)
+            split_size = qkv_states.shape[1] // 3
+            query_states, key_states, value_states = ops.split(qkv_states, split_size, dim=1)
+            # query_layer, key_layer, value_layer = mint.split(qkv_layer, split_size, dim=1)
 
-        proj_shape = (bsz * self.num_heads, -1, self.head_dim)
-        query_states = self._shape(query_states, tgt_len, bsz).view(*proj_shape)
-        key_states = key_states.view(*proj_shape)
-        value_states = value_states.view(*proj_shape)
+            proj_shape = (bsz * self.num_heads, -1, self.head_dim)
+            query_states = key_states.view(*proj_shape)
+            key_states = key_states.view(*proj_shape)
+            value_states = value_states.view(*proj_shape)
+        else:
+            # get query proj
+            query_states = self.q_proj(hidden_states) * self.scale
+            key_states = self._shape(self.k_proj(hidden_states), -1, bsz)
+            value_states = self._shape(self.v_proj(hidden_states), -1, bsz)
+
+            proj_shape = (bsz * self.num_heads, -1, self.head_dim)
+            query_states = self._shape(query_states, tgt_len, bsz).view(*proj_shape)
+            key_states = key_states.view(*proj_shape)
+            value_states = value_states.view(*proj_shape)
 
         src_len = key_states.shape[1]
         attn_weights = ops.bmm(query_states, ops.transpose(key_states, 1, 2))
@@ -570,7 +610,7 @@ class CLIPTextTransformer(nn.Module):
         # For `pooled_output` computation
         self.eos_token_id = config.eos_token_id
 
-
+    @jit(compile_once=True)
     def forward(
         self,
         input_ids: Optional[mindspore.Tensor] = None,
@@ -579,6 +619,7 @@ class CLIPTextTransformer(nn.Module):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        causal_attention_mask: Optional[mindspore.Tensor] = None,
     ) -> Union[Tuple, BaseModelOutputWithPooling]:
         r"""
         Returns:
@@ -598,11 +639,12 @@ class CLIPTextTransformer(nn.Module):
 
         hidden_states = self.embeddings(input_ids=input_ids, position_ids=position_ids)
 
-        # CLIP's text model uses causal mask, prepare it here.
-        # https://github.com/openai/CLIP/blob/cfcffb90e69f37bf2ff1e988237a0fbe41f33c04/clip/model.py#L324
-        causal_attention_mask = _create_4d_causal_attention_mask(
-            input_shape, hidden_states.dtype
-        )
+        if causal_attention_mask is None:
+            # CLIP's text model uses causal mask, prepare it here.
+            # https://github.com/openai/CLIP/blob/cfcffb90e69f37bf2ff1e988237a0fbe41f33c04/clip/model.py#L324
+            causal_attention_mask = _create_4d_causal_attention_mask(
+                input_shape, hidden_states.dtype
+            )
 
         # expand attention_mask
         if attention_mask is not None:
@@ -718,6 +760,7 @@ class CLIPVisionTransformer(nn.Module):
         self.encoder = CLIPEncoder(config)
         self.post_layernorm = nn.LayerNorm(embed_dim, eps=config.layer_norm_eps)
 
+    @jit(compile_once=True)
     def forward(
         self,
         pixel_values: Optional[mindspore.Tensor] = None,
@@ -949,6 +992,11 @@ class CLIPModel(CLIPPreTrainedModel):
 
         return image_features
 
+    def fuse_qkv_projections(self):
+        for module in self.modules():
+            if isinstance(module, CLIPAttention):
+                module.fuse_projections(fuse=True)
+
     def forward(
         self,
         input_ids: Optional[mindspore.Tensor] = None,
@@ -998,6 +1046,12 @@ class CLIPModel(CLIPPreTrainedModel):
             return_dict=return_dict,
         )
 
+        input_shape = input_ids.shape
+        # FIXME: mindspore.float32
+        causal_attention_mask = _create_4d_causal_attention_mask(
+            input_shape, mindspore.float32
+        )
+
         text_outputs = self.text_model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -1005,6 +1059,7 @@ class CLIPModel(CLIPPreTrainedModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            causal_attention_mask=causal_attention_mask,
         )
 
         image_embeds = vision_outputs[1]
