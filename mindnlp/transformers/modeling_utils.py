@@ -31,6 +31,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 from zipfile import is_zipfile
 
 import mindspore
+from mindspore import mint
 from mindspore import Tensor
 from mindspore._c_expression import typing # pylint: disable=no-name-in-module, import-error
 from mindspore.communication import get_group_size
@@ -793,12 +794,14 @@ class ModuleUtilsMixin:
             `mindspore.Tensor` The extended attention mask, with a the same dtype as `attention_mask.dtype`.
         """
         if dtype is None:
+            # Problem
             dtype = self.dtype
-
+        batch_size, seq_length = input_shape
         # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
         # ourselves in which case we just need to make it broadcastable to all heads.
         if attention_mask.ndim == 3:
-            extended_attention_mask = attention_mask[:, None, :, :]
+            extended_attention_mask = attention_mask.unsqueeze(1)
+            # extended_attention_mask = attention_mask[:, None, :, :]
         elif attention_mask.ndim == 2:
             # Provided a padding mask of dimensions [batch_size, seq_length]
             # - if the model is a decoder, apply a causal mask in addition to the padding mask
@@ -808,7 +811,8 @@ class ModuleUtilsMixin:
                     input_shape, attention_mask
                 )
             else:
-                extended_attention_mask = attention_mask[:, None, None, :]
+                extended_attention_mask = attention_mask.view(batch_size, 1, 1, seq_length)
+                # extended_attention_mask = attention_mask[:, None, None, :]
         else:
             raise ValueError(
                 f"Wrong shape for input_ids (shape {input_shape}) or attention_mask (shape {attention_mask.shape})"
@@ -823,6 +827,34 @@ class ModuleUtilsMixin:
         extended_attention_mask = (1.0 - extended_attention_mask) * float(ops.finfo(dtype).min)
         return extended_attention_mask
 
+    def get_flash_attention_mask(
+        self, attention_mask: Tensor, input_shape: Tuple[int], dtype = None
+    ) -> Tensor:
+        batch_size, seq_length = input_shape
+        # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
+        # ourselves in which case we just need to make it broadcastable to all heads.
+        attention_mask = (1 - attention_mask).to(dtype=mindspore.uint8)
+        if attention_mask.ndim == 3:
+            extended_attention_mask = attention_mask.unsqueeze(1)
+            # extended_attention_mask = attention_mask[:, None, :, :]
+        elif attention_mask.ndim == 2:
+            # Provided a padding mask of dimensions [batch_size, seq_length]
+            # - if the model is a decoder, apply a causal mask in addition to the padding mask
+            # - if the model is an encoder, make the mask broadcastable to [batch_size, num_heads, seq_length, seq_length]
+            if self.config.is_decoder:
+                raise ValueError(
+                f"Not Implemented"
+                )
+            else:
+                extended_attention_mask = attention_mask.view(batch_size, 1, 1, seq_length)
+                extended_attention_mask = mint.broadcast_to(attention_mask, (batch_size, 1, seq_length, seq_length))
+        else:
+            raise ValueError(
+                f"Wrong shape for input_ids (shape {input_shape}) or attention_mask (shape {attention_mask.shape})"
+            )
+        
+        return extended_attention_mask
+        
     def get_head_mask(
         self, head_mask: Optional[Tensor], num_hidden_layers: int, is_attention_chunked: bool = False
     ) -> Tensor:
