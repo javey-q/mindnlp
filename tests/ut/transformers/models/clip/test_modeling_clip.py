@@ -636,7 +636,8 @@ class CLIPModelIntegrationTest(unittest.TestCase):
 
         # forward pass
         with no_grad():
-            outputs = model(**dict(inputs), return_dict=False)
+            # outputs = model(**dict(inputs), return_dict=False)
+            outputs = run_model(model, inputs)
 
         # verify the logits
         self.assertEqual(
@@ -653,7 +654,7 @@ class CLIPModelIntegrationTest(unittest.TestCase):
         expected_logits = mindspore.tensor([[24.5701, 19.3049]])
         # print(outputs.logits_per_image)
         print(outputs[0])
-
+        
         # self.assertTrue(ops.allclose(outputs.logits_per_image, expected_logits, atol=1e-3))
         self.assertTrue(ops.allclose(outputs[0], expected_logits, atol=1e-2))
 
@@ -681,7 +682,7 @@ class CLIPModelIntegrationTest(unittest.TestCase):
                 if i==19 and _run_profiler:
                     _framework_profiler_step_start()
                 s = time.time()
-                run_model(model, inputs)
+                outputs = run_model(model, inputs)
                 t = time.time()
                 if i==19 and _run_profiler:
                     _framework_profiler_step_end()
@@ -691,6 +692,7 @@ class CLIPModelIntegrationTest(unittest.TestCase):
         average_time_ms = sum(infer_time[1:])/len(infer_time[1:])*1000
         print(f'average inference time: {average_time_ms} ms')
 
-# @jit(compile_once=True)
+@jit(compile_once=True)
 def run_model(model, inputs):
     outputs = model(**dict(inputs), return_dict=False)
+    return outputs

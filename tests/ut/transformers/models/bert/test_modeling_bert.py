@@ -15,7 +15,7 @@
 import os
 import tempfile
 import unittest
-from mindspore import jit
+from mindspore import jit, JitConfig
 from mindspore.amp import auto_mixed_precision
 
 from mindnlp.core import nn
@@ -610,13 +610,14 @@ class BertModelIntegrationTest(unittest.TestCase):
     @slow
     def test_inference_no_head_absolute_embedding(self):
         model = BertModel.from_pretrained(".mindnlp/model/google-bert/bert-base-uncased")
+        # add for accelerate
         model.fuse_qkv_projections()
         model.insert_flash_attention()
         model.jit()
         input_ids = mindspore.tensor([[0, 345, 232, 328, 740, 140, 1695, 69, 6078, 1588, 2]])
         attention_mask = mindspore.tensor([[0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]])
         with no_grad():
-            output = model(input_ids, attention_mask=attention_mask)[0]
+            output = run_model(model, input_ids, attention_mask)
         expected_shape = (1, 11, 768)
         self.assertEqual(output.shape, expected_shape)
         expected_slice = mindspore.tensor([[[0.4249, 0.1008, 0.7531], [0.3771, 0.1188, 0.7467], [0.4152, 0.1098, 0.7108]]])
@@ -691,18 +692,21 @@ class BertModelIntegrationTest(unittest.TestCase):
         import time
         _run_profiler = parse_flag_from_env('MS_ENABLE_RUNTIME_PROFILER', False)
         model = BertModel.from_pretrained(".mindnlp/model/google-bert/bert-base-uncased")
+        # add for accelerate
         model.fuse_qkv_projections()
         model.insert_flash_attention()
         model.jit()
-        input_ids = mindspore.tensor([[0] + [345, 232, 328, 740, 140, 1695, 69, 6078, 1588, 2]])
-        attention_mask = mindspore.tensor([[0] + [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]])
+        # input_ids = mindspore.tensor([[0, 345, 232, 328, 740, 140, 1695, 69, 6078, 1588, 2]])
+        # attention_mask = mindspore.tensor([[0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]])
+        input_ids = mindspore.tensor([[0] + [1]*511])
+        attention_mask = mindspore.tensor([[0] + [1]*511])
         infer_time = []
         with no_grad():
             for i in range(20):
                 if i==19 and _run_profiler:
                     _framework_profiler_step_start()
                 s = time.time()
-                run_model(model, input_ids, attention_mask)
+                output = run_model(model, input_ids, attention_mask)
                 t = time.time()
                 if i==19 and _run_profiler:
                     _framework_profiler_step_end()
@@ -710,7 +714,9 @@ class BertModelIntegrationTest(unittest.TestCase):
         print(infer_time)
         average_time_ms = sum(infer_time[1:])/len(infer_time[1:])*1000
         print(f'average inference time: {average_time_ms} ms')
-        
+
+# jitconfig = JitConfig(jit_level="O1")
 @jit(compile_once=True)
 def run_model(model, input_ids, attention_mask):
     output = model(input_ids, attention_mask=attention_mask, return_dict=False)[0]
+    return output

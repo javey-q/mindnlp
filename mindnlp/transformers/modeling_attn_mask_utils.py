@@ -64,7 +64,6 @@ class AttentionMaskConverter:
         batch_size: int,
         query_length: int,
         key_value_length: int,
-        use_flash_attention = False,
         dtype = mindspore.float32,
     ) -> mindspore.Tensor:
         """
@@ -82,22 +81,40 @@ class AttentionMaskConverter:
         # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
         causal_4d_mask = None
         if input_shape[-1] > 1 or self.sliding_window is not None:
-            if use_flash_attention:
-                causal_4d_mask = self._make_causal_mask_flash_attention(
-                    input_shape,
-                    dtype,
-                    past_key_values_length=past_key_values_length,
-                    sliding_window=self.sliding_window,
-                )
-            else:
-                causal_4d_mask = self._make_causal_mask(
+            causal_4d_mask = self._make_causal_mask(
+            input_shape,
+            dtype,
+            past_key_values_length=past_key_values_length,
+            sliding_window=self.sliding_window,
+            )
+
+        return causal_4d_mask
+
+    def to_causal_2d_flash_attention(
+        self,
+        query_length: int,
+        key_value_length: int,
+        dtype = bool,
+    ) -> mindspore.Tensor:
+        
+        if not self.is_causal:
+            raise ValueError(f"Please use `to_causal_4d` only if {self.__class__} has `is_causal` set to True.")
+
+        # If shape is not cached, create a new causal mask and cache it
+        input_shape = (1, query_length)
+        past_key_values_length = key_value_length - query_length
+
+        # create causal mask
+        # [bsz, seq_len] -> [tgt_seq_len, src_seq_len]
+        causal_2d_mask = None
+        if input_shape[-1] > 1 or self.sliding_window is not None:
+            causal_2d_mask = self._make_causal_mask_flash_attention(
                 input_shape,
                 dtype,
                 past_key_values_length=past_key_values_length,
                 sliding_window=self.sliding_window,
-                )
-
-        return causal_4d_mask
+            )
+        return causal_2d_mask
 
     def to_4d(
         self,
@@ -189,6 +206,8 @@ class AttentionMaskConverter:
 
         mask = mask.bool()
 
+        return mask
+
         # if past_key_values_length > 0:
         #     mask = ops.cat([ops.zeros(tgt_len, past_key_values_length, dtype=dtype), mask], dim=-1)
 
@@ -199,7 +218,7 @@ class AttentionMaskConverter:
         #     context_mask = 1 - ops.triu(ops.ones_like(mask, dtype=mindspore.int32), diagonal=diagonal)
         #     mask = mask.masked_fill(context_mask.bool(), mindspore.tensor(np.finfo(mindspore.dtype_to_nptype(dtype)).min))
 
-        return mask[None, None, :, :].broadcast_to((bsz, 1, tgt_len, tgt_len + past_key_values_length))
+        # return mask[None, None, :, :].broadcast_to((bsz, 1, tgt_len, tgt_len + past_key_values_length))
 
     @staticmethod
     def _expand_mask(mask: mindspore.Tensor, dtype, tgt_len: Optional[int] = None):
@@ -336,7 +355,6 @@ def _prepare_4d_attention_mask(mask: mindspore.Tensor, dtype, tgt_len: Optional[
 def _create_4d_causal_attention_mask(
     input_shape: Union[Tuple, List],
     dtype,
-    use_flash_attention: bool = False,
     past_key_values_length: int = 0,
     sliding_window: Optional[int] = None,
 ):
@@ -357,6 +375,33 @@ def _create_4d_causal_attention_mask(
 
     key_value_length = past_key_values_length + input_shape[-1]
     attention_mask = attn_mask_converter.to_causal_4d(
-        input_shape[0], input_shape[-1], key_value_length, use_flash_attention=use_flash_attention, dtype=dtype)
+        input_shape[0], input_shape[-1], key_value_length, dtype=dtype)
+
+    return attention_mask
+
+def _create_2d_causal_attention_mask(
+    input_shape: Union[Tuple, List],
+    dtype,
+    past_key_values_length: int = 0,
+    sliding_window: Optional[int] = None,
+):
+    """
+    Creates a causal 4D mask of shape `(batch_size, 1, query_length, key_value_length)`
+
+    Args:
+        input_shape (`tuple(int)` or `list(int)` or `torch.Size`):
+            The input shape should be a tuple that defines `(batch_size, query_length)`.
+        dtype (`torch.dtype`):
+            The torch dtype the created mask shall have.
+        device (`int`):
+            The torch device the created mask shall have.
+        sliding_window (`int`, *optional*):
+            If the model uses windowed attention, a sliding window should be passed.
+    """
+    attn_mask_converter = AttentionMaskConverter(is_causal=True, sliding_window=sliding_window)
+
+    key_value_length = past_key_values_length + input_shape[-1]
+    attention_mask = attn_mask_converter.to_causal_2d_flash_attention(
+        input_shape[-1], key_value_length, dtype=dtype)
 
     return attention_mask

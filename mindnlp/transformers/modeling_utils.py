@@ -854,6 +854,13 @@ class ModuleUtilsMixin:
             )
         
         return extended_attention_mask
+    
+    def create_flash_attention_mask(self, max_len: int, dtype = None
+    ) -> Tensor:
+        mask = mint.zeros((max_len, max_len))
+        mask[:, 0] = 1
+        mask = mask.bool()
+        return mask
         
     def get_head_mask(
         self, head_mask: Optional[Tensor], num_hidden_layers: int, is_attention_chunked: bool = False

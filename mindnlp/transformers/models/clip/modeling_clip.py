@@ -28,7 +28,7 @@ from mindnlp.core import nn, ops
 from mindnlp.core.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
 from ...activations import ACT2FN
-from ...modeling_attn_mask_utils import _create_4d_causal_attention_mask, _prepare_4d_attention_mask
+from ...modeling_attn_mask_utils import _create_4d_causal_attention_mask, _prepare_4d_attention_mask, _create_2d_causal_attention_mask
 from ...modeling_outputs import BaseModelOutput, BaseModelOutputWithPooling, ImageClassifierOutput
 from ...modeling_utils import PreTrainedModel
 from ....utils import (
@@ -183,9 +183,11 @@ class CLIPVisionEmbeddings(nn.Module):
         batch_size = pixel_values.shape[0]
         target_dtype = self.patch_embedding.weight.dtype
         patch_embeds = self.patch_embedding(pixel_values.to(dtype=target_dtype))  # shape = [*, width, grid, grid]
-        patch_embeds = ops.transpose(ops.flatten(patch_embeds, 2), 1, 2)
+        # patch_embeds = ops.transpose(ops.flatten(patch_embeds, 2), 1, 2)
+        patch_embeds = mint.permute(ops.flatten(patch_embeds, 2), (0, 2, 1))
 
-        class_embeds = self.class_embedding.broadcast_to((batch_size, 1, -1))
+        # class_embeds = self.class_embedding.broadcast_to((batch_size, 1, -1))
+        class_embeds = mint.broadcast_to(self.class_embedding, (batch_size, 1, -1))
         embeddings = ops.cat([class_embeds, patch_embeds], dim=1)
         embeddings = embeddings + self.position_embedding(self.position_ids)
         return embeddings
@@ -213,7 +215,8 @@ class CLIPTextEmbeddings(nn.Module):
         seq_length = input_ids.shape[-1] if input_ids is not None else inputs_embeds.shape[-2]
 
         if position_ids is None:
-            position_ids = self.position_ids[:, :seq_length]
+            # position_ids = self.position_ids[:, :seq_length]
+            position_ids = mint.narrow(self.position_ids, 1, 0, seq_length)
 
         if inputs_embeds is None:
             inputs_embeds = self.token_embedding(input_ids)
@@ -255,8 +258,8 @@ class CLIPAttention(nn.Module):
     def transpose_for_qkv_scores(self, x: mindspore.Tensor) -> mindspore.Tensor:
         new_x_shape = x.shape[:-1] + (3*self.num_heads, self.head_dim)
         x = x.view(new_x_shape)
-        return x.permute(0, 2, 1, 3)
-        # return mint.permute(x, (0, 2, 1, 3))
+        # return x.permute(0, 2, 1, 3)
+        return mint.permute(x, (0, 2, 1, 3))
     
     def fuse_projections(self, fuse=True):
         dtype = self.q_proj.weight.data.dtype
@@ -319,11 +322,17 @@ class CLIPAttention(nn.Module):
             query_states = self.q_proj(hidden_states) * self.scale
             key_states = self._shape(self.k_proj(hidden_states), -1, bsz)
             value_states = self._shape(self.v_proj(hidden_states), -1, bsz)
+            query_states = self._shape(query_states, tgt_len, bsz)
 
-            proj_shape = (bsz * self.num_heads, -1, self.head_dim)
-            query_states = self._shape(query_states, tgt_len, bsz).view(*proj_shape)
-            key_states = key_states.view(*proj_shape)
-            value_states = value_states.view(*proj_shape)
+            if self.use_flash_attention:
+                query_states = query_states.to(dtype=mindspore.float16)
+                key_states = key_states.to(dtype=mindspore.float16)
+                value_states = value_states.to(dtype=mindspore.float16)
+            else:
+                proj_shape = (bsz * self.num_heads, -1, self.head_dim)
+                query_states = query_states.view(*proj_shape)
+                key_states = key_states.view(*proj_shape)
+                value_states = value_states.view(*proj_shape)
 
         if self.use_flash_attention:
             bsz, head_num, seq_len, _ = query_states.shape
@@ -638,15 +647,25 @@ class CLIPTextTransformer(nn.Module):
     def __init__(self, config: CLIPTextConfig):
         super().__init__()
         self.config = config
-        embed_dim = config.hidden_size
+        self.embed_dim = config.hidden_size
         self.embeddings = CLIPTextEmbeddings(config)
         self.encoder = CLIPEncoder(config)
-        self.final_layer_norm = nn.LayerNorm(embed_dim, eps=config.layer_norm_eps)
+        self.final_layer_norm = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_eps)
 
+        self.max_position_embeddings = config.max_position_embeddings
+        self.causal_attention_mask = _create_4d_causal_attention_mask(
+            (1, self.max_position_embeddings), mindspore.float32
+        )
         # For `pooled_output` computation
         self.eos_token_id = config.eos_token_id
+        self.use_flash_attention = False
+    
+    def insert_flash_attention_mask(self):
+        self.causal_attention_mask = _create_2d_causal_attention_mask(
+            (1, self.max_position_embeddings), bool
+        )
+        self.use_flash_attention = True
 
-    @jit(compile_once=True)
     def forward(
         self,
         input_ids: Optional[mindspore.Tensor] = None,
@@ -655,7 +674,6 @@ class CLIPTextTransformer(nn.Module):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-        causal_attention_mask: Optional[mindspore.Tensor] = None,
     ) -> Union[Tuple, BaseModelOutputWithPooling]:
         r"""
         Returns:
@@ -674,14 +692,22 @@ class CLIPTextTransformer(nn.Module):
         input_ids = input_ids.view(-1, input_shape[-1])
 
         hidden_states = self.embeddings(input_ids=input_ids, position_ids=position_ids)
+        if self.use_flash_attention:
+            causal_attention_mask = mint.narrow(self.causal_attention_mask, 0, 0, input_shape[-1])
+            causal_attention_mask = mint.narrow(causal_attention_mask, 1, 0, input_shape[-1])
+        else:
+            if self.causal_attention_mask is None:
+                # CLIP's text model uses causal mask, prepare it here.
+                # https://github.com/openai/CLIP/blob/cfcffb90e69f37bf2ff1e988237a0fbe41f33c04/clip/model.py#L324
+                causal_attention_mask = _create_4d_causal_attention_mask(
+                    input_shape, hidden_states.dtype
+                )
+            else:
+                causal_attention_mask = mint.narrow(self.causal_attention_mask, 2, 0, input_shape[-1])
+                causal_attention_mask = mint.narrow(causal_attention_mask, 3, 0, input_shape[-1])
+                causal_attention_mask = mint.broadcast_to(causal_attention_mask, (input_shape[0], -1, -1, -1))
 
-        if causal_attention_mask is None:
-            # CLIP's text model uses causal mask, prepare it here.
-            # https://github.com/openai/CLIP/blob/cfcffb90e69f37bf2ff1e988237a0fbe41f33c04/clip/model.py#L324
-            causal_attention_mask = _create_4d_causal_attention_mask(
-                input_shape, hidden_states.dtype
-            )
-
+        # FIXME: Not support mindspore.jit
         # expand attention_mask
         if attention_mask is not None:
             # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
@@ -706,10 +732,13 @@ class CLIPTextTransformer(nn.Module):
             # text_embeds.shape = [batch_size, sequence_length, transformer.width]
             # take features from the eot embedding (eot_token is the highest number in each sequence)
             # casting to mindspore.int32 for onnx compatibility: argmax doesn't support int64 inputs with opset 14
-            pooled_output = last_hidden_state[
-                ops.arange(last_hidden_state.shape[0]),
-                ops.argmax(input_ids.to(dtype=mindspore.int32), dim=-1),
-            ]
+            # pooled_output = last_hidden_state[
+            #     list(range(last_hidden_state.shape[0])),
+            #     mint.argmax(input_ids.to(dtype=mindspore.int32), dim=-1),
+            # ]
+            max_indices  = mint.argmax(input_ids.to(dtype=mindspore.int32), dim=-1, keepdim=True).unsqueeze(-1)
+            max_indices = mint.broadcast_to(max_indices, (-1, -1, self.embed_dim))
+            pooled_output = mint.gather(last_hidden_state, 1, max_indices).squeeze(1)
         else:
             # The config gets updated `eos_token_id` from PR #24773 (so the use of exta new tokens is possible)
             pooled_output = last_hidden_state[
@@ -796,7 +825,6 @@ class CLIPVisionTransformer(nn.Module):
         self.encoder = CLIPEncoder(config)
         self.post_layernorm = nn.LayerNorm(embed_dim, eps=config.layer_norm_eps)
 
-    @jit(compile_once=True)
     def forward(
         self,
         pixel_values: Optional[mindspore.Tensor] = None,
@@ -828,7 +856,8 @@ class CLIPVisionTransformer(nn.Module):
         )
 
         last_hidden_state = encoder_outputs[0]
-        pooled_output = last_hidden_state[:, 0, :]
+        # pooled_output = last_hidden_state[:, 0, :]
+        pooled_output = mint.index_select(last_hidden_state, 1, Tensor([0,], mindspore.int32)).squeeze(1)
         pooled_output = self.post_layernorm(pooled_output)
 
         if not return_dict:
@@ -1039,6 +1068,9 @@ class CLIPModel(CLIPPreTrainedModel):
         for module in self.modules():
             if isinstance(module, CLIPAttention):
                 module.insert_flash_attention()
+        for module in self.modules():
+            if isinstance(module, CLIPTextTransformer):
+                module.insert_flash_attention_mask()
 
     def forward(
         self,
@@ -1089,12 +1121,6 @@ class CLIPModel(CLIPPreTrainedModel):
             return_dict=return_dict,
         )
 
-        input_shape = input_ids.shape
-        # FIXME: mindspore.float32
-        causal_attention_mask = _create_4d_causal_attention_mask(
-            input_shape, mindspore.float32, use_flash_attention=self.use_flash_attention
-        )
-
         text_outputs = self.text_model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -1102,7 +1128,6 @@ class CLIPModel(CLIPPreTrainedModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
-            causal_attention_mask=causal_attention_mask,
         )
 
         image_embeds = vision_outputs[1]

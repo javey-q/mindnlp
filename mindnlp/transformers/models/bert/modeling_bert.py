@@ -426,8 +426,7 @@ class BertIntermediate(nn.Module):
         super().__init__()
         self.dense = nn.Linear(config.hidden_size, config.intermediate_size)
         if isinstance(config.hidden_act, str):
-            # self.intermediate_act_fn = ACT2FN[config.hidden_act]
-            self.intermediate_act_fn = nn.GELU() # approximate='tanh'
+            self.intermediate_act_fn = ACT2FN[config.hidden_act]
         else:
             self.intermediate_act_fn = config.hidden_act
 
@@ -812,6 +811,9 @@ class BertModel(BertPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
         self.use_flash_attention = False
+        self.extended_attention_mask = None
+        self.max_len = self.config.max_position_embeddings
+        self.attention_mask = None
 
     def get_input_embeddings(self):
         return self.embeddings.word_embeddings
@@ -837,6 +839,7 @@ class BertModel(BertPreTrainedModel):
         for module in self.modules():
             if isinstance(module, BertSelfAttention):
                 module.insert_flash_attention()
+        self.attention_mask = self.create_flash_attention_mask(max_len=self.max_len)
                 
     # @jit(compile_once=True)
     def forward(
@@ -929,7 +932,13 @@ class BertModel(BertPreTrainedModel):
         # ourselves in which case we just need to make it broadcastable to all heads.
         # (1, 1, 1, 11)
         if self.use_flash_attention:
-            extended_attention_mask = self.get_extended_flash_attention_mask(attention_mask, input_shape)
+            if self.attention_mask is not None:
+                extended_attention_mask = self.attention_mask
+                if input_shape[-1]<self.max_len:
+                    extended_attention_mask = mint.narrow(extended_attention_mask, 0, 0, input_shape[-1])
+                    extended_attention_mask = mint.narrow(extended_attention_mask, 1, 0, input_shape[-1])
+            else:
+                extended_attention_mask = self.get_extended_flash_attention_mask(attention_mask, input_shape)
         else:  
             extended_attention_mask = self.get_extended_attention_mask(attention_mask, input_shape, dtype=embedding_output.dtype)
 
